@@ -1,0 +1,13 @@
+{
+  "name": "recovery-tool",
+  "version": "0.1.0",
+  "private": true,
+  "description": "USB-C Android WhatsApp/data recovery tool. Rust recovery engine (core/) + Tauri desktop UI (desktop/).",
+  "scripts": {
+    "core:build": "cargo build --manifest-path core/Cargo.toml --release",
+    "core:test": "cargo test --manifest-path core/Cargo.toml",
+    "core:cli": "cargo run --manifest-path core/Cargo.toml --release --",
+    "ui:dev": "npm --prefix desktop run tauri dev",
+    "ui:build": "npm --prefix desktop run tauri build"
+  }
+}

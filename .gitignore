@@ -1,0 +1,19 @@
+# Rust
+core/target/
+desktop/src-tauri/target/
+
+# Node
+node_modules/
+desktop/dist/
+packages/*/dist/
+packages/*/node_modules/
+
+# Bundler downloads
+nsis-*.zip
+
+# Recovery runtime data (pulled device data, result DBs)
+workspace/
+
+# Env / misc
+.env
+*.log
