@@ -4,11 +4,12 @@ import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition } from "./types";
+import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult, CallEvent } from "./types";
 import { fmtSize, fmtTime } from "./types";
+import { DirectDataViewer, AppsPanel } from "./components";
 
 // Per-device session state for multi-device support
-interface DeviceSession {
+export interface DeviceSession {
   serial: string;
   model: string;
   // Device mirror
@@ -529,12 +530,24 @@ export default function App() {
   const [showSystem, setShowSystem] = useState(false);
   const [waStage, setWaStage] = useState("");
 
+  // Messaging apps detection
+  const [appInventory, setAppInventory] = useState<AppInventory | null>(null);
+  const [appInventoryBusy, setAppInventoryBusy] = useState(false);
+
   // Direct acquisition (call logs, SMS, contacts)
   const [directData, setDirectData] = useState<DirectAcquisition | null>(null);
   const [directBusy, setDirectBusy] = useState(false);
-  const [directTab, setDirectTab] = useState<"calls" | "sms" | "contacts" | "recordings" | "browser" | "calendar">("calls");
-  const [directFilter, setDirectFilter] = useState("");
   const [directView, setDirectView] = useState<"summary" | "full">("summary");
+  const [waDeepResult, setWaDeepResult] = useState<WhatsAppDeepResult | null>(null);
+  const [waDeepBusy, setWaDeepBusy] = useState(false);
+  const [rootCheck, setRootCheck] = useState<RootCheckResult | null>(null);
+  const [rootBusy, setRootBusy] = useState(false);
+  
+  // Call monitoring
+  const [callMonitorActive, setCallMonitorActive] = useState(false);
+  const [callEvents, setCallEvents] = useState<CallEvent[]>([]);
+  const [currentCallNotification, setCurrentCallNotification] = useState<string | null>(null);
+  const callMonitorRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Global
   const [busy, setBusy] = useState(false);
@@ -684,12 +697,125 @@ export default function App() {
       try {
         const data = await api.directAcquisition(serial);
         setDirectData(data);
-        setStatus(`Direct acquisition complete — ${data.call_logs.length} calls, ${data.sms_messages.length} SMS, ${data.contacts.length} contacts, ${data.call_recordings.length} recordings, ${data.browser_history.length} browser, ${data.calendar_events.length} calendar`);
+        setStatus(`Direct acquisition complete — ${data.call_logs.length} calls, ${data.sms_messages.length} SMS, ${data.contacts.length} contacts, ${data.call_recordings.length} recordings, ${data.whatsapp_media.length} WA media, ${data.calendar_events.length} calendar`);
         return data;
       } finally {
         setDirectBusy(false);
       }
     }, "System data acquired");
+
+  const doWhatsappDeep = () =>
+    run(async () => {
+      setWaDeepBusy(true);
+      try {
+        const data = await api.extractWhatsappDeep(serial);
+        setWaDeepResult(data);
+        const status = data.database_decrypted
+          ? `WhatsApp deep extraction complete — ${data.total_messages} messages, ${data.total_contacts} chats, ${data.media_with_contacts.length} media files`
+          : `WhatsApp: ${data.key_obtained ? "Key obtained" : "No key"}, ${data.crypt_file_path ? "database found" : "no database"} — ${data.notes.join(", ")}`;
+        setStatus(status);
+        return data;
+      } finally {
+        setWaDeepBusy(false);
+      }
+    }, "WhatsApp deep extraction complete");
+
+  const doCheckRoot = () =>
+    run(async () => {
+      setRootBusy(true);
+      try {
+        const data = await api.checkRoot(serial);
+        setRootCheck(data);
+        setStatus(data.has_root 
+          ? `Root access confirmed${data.can_read_whatsapp_key ? " — WhatsApp key accessible" : ""}`
+          : "No root access — WhatsApp key extraction requires root");
+        return data;
+      } finally {
+        setRootBusy(false);
+      }
+    }, "Root check complete");
+
+  // Call monitoring functions
+  const startCallMonitor = useCallback(() => {
+    if (!serial || callMonitorRef.current) return;
+    setCallMonitorActive(true);
+    setCallEvents([]);
+    setCurrentCallNotification(null);
+    
+    // Poll every 2 seconds for call state changes
+    callMonitorRef.current = setInterval(async () => {
+      try {
+        const notification = await api.getCallNotification(serial);
+        setCurrentCallNotification(notification);
+        
+        if (notification) {
+          // There's an active call - log it
+          const event = await api.pollCallState(serial);
+          if (event && event.event_type !== "Idle" && event.event_type !== "Unknown") {
+            setCallEvents(prev => {
+              // Don't add duplicate events within 5 seconds
+              const recent = prev.find(e => 
+                e.event_type === event.event_type && 
+                Math.abs(e.timestamp - event.timestamp) < 5000
+              );
+              if (recent) return prev;
+              return [...prev, event].slice(-50); // Keep last 50 events
+            });
+          }
+        }
+      } catch (e) {
+        // Silently ignore errors during monitoring
+      }
+    }, 2000);
+  }, [serial]);
+
+  const stopCallMonitor = useCallback(() => {
+    if (callMonitorRef.current) {
+      clearInterval(callMonitorRef.current);
+      callMonitorRef.current = null;
+    }
+    setCallMonitorActive(false);
+    setCurrentCallNotification(null);
+  }, []);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (callMonitorRef.current) {
+        clearInterval(callMonitorRef.current);
+      }
+    };
+  }, []);
+
+  const doProvideKey = async () => {
+    const f = await open({
+      title: "Select WhatsApp key file",
+      filters: [{ name: "Key files", extensions: ["key", "*"] }],
+    });
+    if (!f) return;
+    
+    // Copy key to temp location
+    const keyPath = f as string;
+    setWaDeepBusy(true);
+    try {
+      // Use existing decrypt function with provided key
+      if (waDeepResult?.crypt_file_path) {
+        const outcome = await api.decryptBackup(
+          waDeepResult.crypt_file_path,
+          keyPath,
+          "D:\\RecoverKit_Temp\\msgstore_decrypted.db"
+        );
+        setStatus(`Decrypted! Format: ${outcome.format}, key_offset: ${outcome.key_offset}, iv_offset: ${outcome.iv_offset}`);
+        // Re-run extraction to parse the decrypted database
+        const data = await api.extractWhatsappDeep(serial);
+        setWaDeepResult(data);
+      }
+    } catch (e: any) {
+      setStatus(`Decryption failed: ${e.message || e}`);
+    } finally {
+      setWaDeepBusy(false);
+    }
+  };
 
   const doImportTxt = () =>
     run(async () => {
@@ -909,6 +1035,21 @@ export default function App() {
       setError(typeof e === "string" ? e : (e as Error)?.message ?? String(e));
     } finally {
       setAppsBusy(false);
+    }
+  };
+
+  const detectMessagingApps = async () => {
+    if (!serial || appInventoryBusy) return;
+    setAppInventoryBusy(true);
+    setError("");
+    try {
+      const inventory = await api.detectApps(serial);
+      setAppInventory(inventory);
+      setStatus(`Detected ${inventory.total_installed} messaging apps — ${inventory.total_with_data} with data`);
+    } catch (e) {
+      setError(typeof e === "string" ? e : (e as Error)?.message ?? String(e));
+    } finally {
+      setAppInventoryBusy(false);
     }
   };
 
@@ -1156,7 +1297,7 @@ export default function App() {
                       <span className="pill ok">{directData.sms_messages.length} SMS</span>
                       <span className="pill ok">{directData.contacts.length} contacts</span>
                       <span className="pill ok">{directData.call_recordings.length} recordings</span>
-                      <span className="pill ok">{directData.browser_history.length} browser</span>
+                      <span className="pill ok">{directData.whatsapp_media.length} WA media</span>
                       <span className="pill ok">{directData.calendar_events.length} calendar</span>
                     </div>
                     {directData.notes.length > 0 && (
@@ -1174,6 +1315,230 @@ export default function App() {
                       🔍 View All Data
                     </button>
                   </>
+                )}
+              </div>
+            </div>
+
+            {/* WhatsApp Deep Extraction Panel */}
+            <div className="panel" style={{ gridArea: "system" }}>
+              <div className="panel-bar">🔐 WhatsApp Deep Extraction</div>
+              <div className="panel-body">
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <button className="primary" disabled={!serial || waDeepBusy || busy} onClick={doWhatsappDeep} style={{ flex: 1 }}>
+                    {waDeepBusy ? "Extracting…" : "🔓 Auto-Extract Chats"}
+                  </button>
+                  <button className="mini" disabled={!serial || rootBusy} onClick={doCheckRoot} title="Check if device has root access">
+                    {rootBusy ? "…" : "🔍 Root"}
+                  </button>
+                </div>
+                
+                {/* Root Check Results */}
+                {rootCheck && (
+                  <div style={{ marginBottom: 12, padding: 8, background: rootCheck.has_root ? "rgba(0,200,100,0.1)" : "rgba(255,100,0,0.1)", borderRadius: 6 }}>
+                    <div className="stats">
+                      <span className={`pill ${rootCheck.has_root ? "ok" : ""}`}>
+                        {rootCheck.has_root ? "✅ Root" : "❌ No Root"}
+                      </span>
+                      {rootCheck.has_magisk && <span className="pill ok">Magisk</span>}
+                      {rootCheck.has_root && rootCheck.can_read_whatsapp_key && <span className="pill ok">🔑 Key OK</span>}
+                      {rootCheck.has_root && !rootCheck.can_read_whatsapp_key && <span className="pill">🔑 No access</span>}
+                      {rootCheck.android_sdk && <span className="pill">SDK {rootCheck.android_sdk}</span>}
+                    </div>
+                    {rootCheck.details.length > 0 && (
+                      <div style={{ marginTop: 6, fontSize: 11, color: "var(--muted)" }}>
+                        {rootCheck.details.map((d, i) => <div key={i}>• {d}</div>)}
+                      </div>
+                    )}
+                    
+                    {/* Guided Instructions */}
+                    {!rootCheck.has_root && (
+                      <div style={{ marginTop: 10, padding: 8, background: "rgba(255,200,0,0.1)", borderRadius: 4, fontSize: 12 }}>
+                        <strong>⚠️ Root Required for Full Extraction</strong>
+                        <p style={{ margin: "6px 0 4px" }}>The WhatsApp encryption key is protected. Options:</p>
+                        <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
+                          <li><strong>Root device</strong> — Install Magisk (unlock bootloader → flash Magisk)</li>
+                          <li><strong>Export chats</strong> — In WhatsApp: Chat → ⋮ → More → Export chat → import .txt here</li>
+                          <li><strong>Use rooted device</strong> — Login WhatsApp on a rooted phone, extract key</li>
+                        </ol>
+                        <button 
+                          className="mini" 
+                          style={{ marginTop: 8 }}
+                          onClick={doImportTxt}
+                        >
+                          📄 Import Chat Export (.txt)
+                        </button>
+                      </div>
+                    )}
+                    
+                    {rootCheck.has_root && !rootCheck.can_read_whatsapp_key && (
+                      <div style={{ marginTop: 10, padding: 8, background: "rgba(255,200,0,0.1)", borderRadius: 4, fontSize: 12 }}>
+                        <strong>⚠️ Root detected but WhatsApp key not accessible</strong>
+                        <p style={{ margin: "6px 0 0" }}>
+                          Grant root access to ADB: Magisk → Settings → Superuser → ADB → Allow
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                <p className="hint small">
+                  Auto-extracts: key → decrypt → parse → chats. Root needed for full access.
+                </p>
+                {waDeepResult && (
+                  <>
+                    <hr className="pdiv" />
+                    <div className="stats">
+                      <span className={`pill ${waDeepResult.key_obtained ? "ok" : ""}`}>
+                        {waDeepResult.key_obtained ? "🔑 Key obtained" : "🔒 No key"}
+                      </span>
+                      <span className={`pill ${waDeepResult.database_decrypted ? "ok" : ""}`}>
+                        {waDeepResult.database_decrypted ? "✅ Decrypted" : "❌ Not decrypted"}
+                      </span>
+                      {waDeepResult.database_decrypted && (
+                        <>
+                          <span className="pill ok">{waDeepResult.total_messages} messages</span>
+                          <span className="pill ok">{waDeepResult.total_contacts} chats</span>
+                          <span className="pill ok">{waDeepResult.media_with_contacts.length} media</span>
+                        </>
+                      )}
+                    </div>
+                    {waDeepResult.key_method && (
+                      <p className="hint small" style={{ marginTop: 8 }}>Key method: {waDeepResult.key_method}</p>
+                    )}
+                    {waDeepResult.crypt_format && (
+                      <p className="hint small">Database format: {waDeepResult.crypt_format}</p>
+                    )}
+                    {waDeepResult.notes.length > 0 && (
+                      <div className="hint" style={{ marginTop: 8 }}>
+                        {waDeepResult.notes.map((n, i) => (
+                          <p key={i} className={n.includes("failed") || n.includes("not") ? "err" : ""}>• {n}</p>
+                        ))}
+                      </div>
+                    )}
+                    
+                    {/* Provide Key button when key not obtained but crypt file exists */}
+                    {!waDeepResult.key_obtained && waDeepResult.crypt_file_path && (
+                      <div style={{ marginTop: 12, padding: 10, background: "rgba(100,150,255,0.1)", borderRadius: 6 }}>
+                        <p style={{ margin: "0 0 8px", fontSize: 12 }}>
+                          <strong>💡 Have the key file?</strong> If you obtained the WhatsApp key from another source
+                          (rooted device, backup extraction, etc.), you can provide it now to decrypt the database.
+                        </p>
+                        <button className="mini" onClick={doProvideKey} disabled={waDeepBusy}>
+                          🔑 Provide Key File & Decrypt
+                        </button>
+                        <p style={{ margin: "6px 0 0", fontSize: 11, color: "var(--muted)" }}>
+                          Encrypted DB: {waDeepResult.crypt_file_path.split('\\').pop()}
+                        </p>
+                      </div>
+                    )}
+                    
+                    {waDeepResult.chats.length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <p style={{ fontWeight: 500, marginBottom: 8 }}>Extracted Chats:</p>
+                        <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                          {waDeepResult.chats.slice(0, 20).map((chat, i) => (
+                            <div key={i} style={{ padding: "4px 0", borderBottom: i < 19 ? "1px solid var(--border)" : "none" }}>
+                              <strong>{chat.name || chat.jid}</strong>
+                              <span style={{ marginLeft: 8, color: "var(--muted)" }}>
+                                {chat.message_count} msgs
+                              </span>
+                              {chat.last_message && (
+                                <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                                  {chat.last_message.slice(0, 50)}{chat.last_message.length > 50 ? "…" : ""}
+                                </p>
+                              )}
+                            </div>
+                          ))}
+                          {waDeepResult.chats.length > 20 && (
+                            <p style={{ textAlign: "center", color: "var(--muted)", marginTop: 8 }}>
+                              + {waDeepResult.chats.length - 20} more chats
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Call Monitor Panel */}
+            <div className="panel" style={{ gridArea: "main" }}>
+              <div className="panel-bar">
+                📞 Call Monitor
+                {callMonitorActive && <span className="pill ok" style={{ marginLeft: 8 }}>● Live</span>}
+              </div>
+              <div className="panel-body">
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  <button 
+                    className={callMonitorActive ? "mini" : "primary"} 
+                    disabled={!serial}
+                    onClick={callMonitorActive ? stopCallMonitor : startCallMonitor}
+                    style={{ flex: 1 }}
+                  >
+                    {callMonitorActive ? "⏹ Stop Monitoring" : "▶ Start Call Monitor"}
+                  </button>
+                </div>
+                <p className="hint small">
+                  Monitors incoming/outgoing calls in real-time. Notifications appear when calls are initiated.
+                </p>
+                
+                {/* Active Call Notification */}
+                {currentCallNotification && (
+                  <div style={{ 
+                    marginTop: 12, 
+                    padding: 12, 
+                    background: "rgba(0,200,100,0.15)", 
+                    borderRadius: 8,
+                    border: "2px solid rgba(0,200,100,0.5)",
+                    animation: "pulse 1s infinite"
+                  }}>
+                    <p style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>
+                      {currentCallNotification}
+                    </p>
+                  </div>
+                )}
+                
+                {/* Call Event Log */}
+                {callEvents.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <p style={{ fontWeight: 500, marginBottom: 8, fontSize: 12 }}>Call Log ({callEvents.length}):</p>
+                    <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                      {callEvents.slice().reverse().map((event, i) => (
+                        <div key={i} style={{ 
+                          padding: "4px 0", 
+                          borderBottom: i < callEvents.length - 1 ? "1px solid var(--border)" : "none",
+                          fontSize: 12
+                        }}>
+                          <span style={{ marginRight: 8 }}>
+                            {event.event_type === "Incoming" ? "📞" : 
+                             event.event_type === "Outgoing" ? "📱" : 
+                             event.event_type === "Missed" ? "❌" : "📞"}
+                          </span>
+                          <strong>{event.event_type}</strong>
+                          {event.phone_number && (
+                            <span style={{ marginLeft: 8, color: "var(--muted)" }}>
+                              {event.phone_number}
+                            </span>
+                          )}
+                          {event.contact_name && (
+                            <span style={{ marginLeft: 8, color: "var(--accent)" }}>
+                              {event.contact_name}
+                            </span>
+                          )}
+                          <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--muted)" }}>
+                            {new Date(event.timestamp).toLocaleTimeString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                {!callMonitorActive && callEvents.length === 0 && (
+                  <p className="hint small" style={{ marginTop: 12, textAlign: "center" }}>
+                    Click "Start Call Monitor" to begin monitoring calls
+                  </p>
                 )}
               </div>
             </div>
@@ -1285,278 +1650,40 @@ export default function App() {
 
             {/* FULL SCREEN Direct Data Viewer */}
             {directView === "full" && directData && (
-              <div className="direct-full-overlay">
-                <div className="direct-full-header">
-                  <div className="direct-full-tabs">
-                    <button 
-                      className={`direct-tab ${directTab === "calls" ? "active" : ""}`}
-                      onClick={() => { setDirectTab("calls"); setDirectFilter(""); }}
-                    >
-                      📞 Call Logs <span className="tab-count">{directData.call_logs.length}</span>
-                    </button>
-                    <button 
-                      className={`direct-tab ${directTab === "sms" ? "active" : ""}`}
-                      onClick={() => { setDirectTab("sms"); setDirectFilter(""); }}
-                    >
-                      💬 SMS/MMS <span className="tab-count">{directData.sms_messages.length}</span>
-                    </button>
-                    <button 
-                      className={`direct-tab ${directTab === "contacts" ? "active" : ""}`}
-                      onClick={() => { setDirectTab("contacts"); setDirectFilter(""); }}
-                    >
-                      👤 Contacts <span className="tab-count">{directData.contacts.length}</span>
-                    </button>
-                    <button 
-                      className={`direct-tab ${directTab === "recordings" ? "active" : ""}`}
-                      onClick={() => { setDirectTab("recordings"); setDirectFilter(""); }}
-                    >
-                      🎙️ Recordings <span className="tab-count">{directData.call_recordings.length}</span>
-                    </button>
-                    <button 
-                      className={`direct-tab ${directTab === "browser" ? "active" : ""}`}
-                      onClick={() => { setDirectTab("browser"); setDirectFilter(""); }}
-                    >
-                      🌐 Browser <span className="tab-count">{directData.browser_history.length}</span>
-                    </button>
-                    <button 
-                      className={`direct-tab ${directTab === "calendar" ? "active" : ""}`}
-                      onClick={() => { setDirectTab("calendar"); setDirectFilter(""); }}
-                    >
-                      📅 Calendar <span className="tab-count">{directData.calendar_events.length}</span>
-                    </button>
-                  </div>
-                  <div className="direct-full-actions">
-                    <input 
-                      className="direct-filter"
-                      type="text"
-                      placeholder={`Filter ${directTab}...`}
-                      value={directFilter}
-                      onChange={(e) => setDirectFilter(e.target.value)}
-                    />
-                    <button className="mini" onClick={() => setDirectView("summary")} title="Close">✕</button>
-                  </div>
-                </div>
-                <div className="direct-full-body">
-                  {directTab === "calls" && (
-                    <table className="direct-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Name / Number</th>
-                          <th>Type</th>
-                          <th>Duration</th>
-                          <th>Date & Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {directData.call_logs
-                          .filter((c) => {
-                            if (!directFilter) return true;
-                            const q = directFilter.toLowerCase();
-                            return (c.name || "").toLowerCase().includes(q) || c.number.includes(q) || c.call_type.toLowerCase().includes(q);
-                          })
-                          .map((c, i) => (
-                            <tr key={c.id}>
-                              <td className="mono small">{i + 1}</td>
-                              <td><b>{c.name || c.number}</b>{c.name && <span className="hint small">{c.number}</span>}</td>
-                              <td>
-                                <span className={`call-type ${c.call_type}`}>
-                                  {c.call_type === "incoming" ? "↙ IN" : c.call_type === "outgoing" ? "↗ OUT" : "✗ MISSED"}
-                                </span>
-                              </td>
-                              <td className="mono">{c.duration > 0 ? `${Math.floor(c.duration / 60)}m ${c.duration % 60}s` : "—"}</td>
-                              <td className="mono small">{new Date(c.timestamp).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {directTab === "sms" && (
-                    <table className="direct-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Address</th>
-                          <th>Type</th>
-                          <th>Message</th>
-                          <th>Date & Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {directData.sms_messages
-                          .filter((m) => {
-                            if (!directFilter) return true;
-                            const q = directFilter.toLowerCase();
-                            return m.address.toLowerCase().includes(q) || (m.body || "").toLowerCase().includes(q) || m.msg_type.toLowerCase().includes(q);
-                          })
-                          .map((m, i) => (
-                            <tr key={m.id}>
-                              <td className="mono small">{i + 1}</td>
-                              <td><b>{m.address}</b></td>
-                              <td><span className={`sms-type ${m.msg_type}`}>{m.msg_type}</span></td>
-                              <td className="sms-body-cell" title={m.body || ""}>{m.body || "(no body)"}</td>
-                              <td className="mono small">{new Date(m.timestamp).toLocaleString()}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {directTab === "contacts" && (
-                    <table className="direct-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Name</th>
-                          <th>Phone</th>
-                          <th>Email</th>
-                          <th>Source</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {directData.contacts
-                          .filter((c) => {
-                            if (!directFilter) return true;
-                            const q = directFilter.toLowerCase();
-                            return (c.display_name || "").toLowerCase().includes(q) || (c.phone || "").includes(q) || (c.email || "").toLowerCase().includes(q);
-                          })
-                          .map((c, i) => (
-                            <tr key={c.id}>
-                              <td className="mono small">{i + 1}</td>
-                              <td><b>{c.display_name || "Unknown"}</b></td>
-                              <td className="mono">{c.phone || "—"}</td>
-                              <td className="mono small">{c.email || "—"}</td>
-                              <td className="small">{c.source}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {directTab === "contacts" && directData.contacts.length === 0 && (
-                    <div className="empty" style={{ padding: 40 }}>
-                      <p>No contacts found. This may require USB debugging permission to be re-allowed on the phone.</p>
-                    </div>
-                  )}
-                  {directTab === "recordings" && (
-                    <table className="direct-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Filename</th>
-                          <th>Path</th>
-                          <th>Size</th>
-                          <th>Source</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {directData.call_recordings
-                          .filter((r) => {
-                            if (!directFilter) return true;
-                            const q = directFilter.toLowerCase();
-                            return r.filename.toLowerCase().includes(q) || r.path.toLowerCase().includes(q);
-                          })
-                          .map((r, i) => (
-                            <tr key={r.path}>
-                              <td className="mono small">{i + 1}</td>
-                              <td><b>{r.filename}</b></td>
-                              <td className="mono small">{r.path}</td>
-                              <td className="mono">{r.size > 0 ? `${(r.size / 1024 / 1024).toFixed(2)} MB` : "—"}</td>
-                              <td className="small">{r.source}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {directTab === "recordings" && directData.call_recordings.length === 0 && (
-                    <div className="empty" style={{ padding: 40 }}>
-                      <p>No call recordings found. Check if call recording app stores files in standard directories.</p>
-                    </div>
-                  )}
-                  {directTab === "browser" && (
-                    <table className="direct-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Title</th>
-                          <th>URL</th>
-                          <th>Visited</th>
-                          <th>Source</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {directData.browser_history
-                          .filter((h) => {
-                            if (!directFilter) return true;
-                            const q = directFilter.toLowerCase();
-                            return (h.title || "").toLowerCase().includes(q) || h.url.toLowerCase().includes(q);
-                          })
-                          .map((h, i) => (
-                            <tr key={h.id}>
-                              <td className="mono small">{i + 1}</td>
-                              <td><b>{h.title || "No title"}</b></td>
-                              <td className="mono small"><a href={h.url} target="_blank" rel="noopener noreferrer" style={{ color: "#0066cc" }}>{h.url}</a></td>
-                              <td className="small">{h.timestamp > 0 ? new Date(h.timestamp).toLocaleString() : "—"}</td>
-                              <td className="small">{h.source}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {directTab === "browser" && directData.browser_history.length === 0 && (
-                    <div className="empty" style={{ padding: 40 }}>
-                      <p>No browser history found. This may require specific browser permissions.</p>
-                    </div>
-                  )}
-                  {directTab === "calendar" && (
-                    <table className="direct-table">
-                      <thead>
-                        <tr>
-                          <th>#</th>
-                          <th>Title</th>
-                          <th>Location</th>
-                          <th>Start</th>
-                          <th>End</th>
-                          <th>Source</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {directData.calendar_events
-                          .filter((e) => {
-                            if (!directFilter) return true;
-                            const q = directFilter.toLowerCase();
-                            return (e.title || "").toLowerCase().includes(q) || (e.location || "").toLowerCase().includes(q) || (e.description || "").toLowerCase().includes(q);
-                          })
-                          .map((e, i) => (
-                            <tr key={e.id}>
-                              <td className="mono small">{i + 1}</td>
-                              <td><b>{e.title || "No title"}</b>{e.description && <div className="small" style={{ color: "#666", marginTop: 2 }}>{e.description.slice(0, 100)}</div>}</td>
-                              <td className="small">{e.location || "—"}</td>
-                              <td className="small">{e.start_time > 0 ? new Date(e.start_time).toLocaleString() : "—"}</td>
-                              <td className="small">{e.end_time > 0 ? new Date(e.end_time).toLocaleString() : "—"}</td>
-                              <td className="small">{e.source}</td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  )}
-                  {directTab === "calendar" && directData.calendar_events.length === 0 && (
-                    <div className="empty" style={{ padding: 40 }}>
-                      <p>No calendar events found. This may require calendar permissions.</p>
-                    </div>
-                  )}
-                </div>
-                <div className="direct-full-footer">
-                  <span className="hint">
-                    📱 REAL DATA — {directTab === "calls" ? `${directData.call_logs.length} call logs` : directTab === "sms" ? `${directData.sms_messages.length} messages` : directTab === "contacts" ? `${directData.contacts.length} contacts` : directTab === "recordings" ? `${directData.call_recordings.length} recordings` : directTab === "browser" ? `${directData.browser_history.length} history entries` : `${directData.calendar_events.length} events`}
-                    {directFilter && ` · filtered`}
-                  </span>
-                </div>
-              </div>
-            )}
-          </section>
+              <DirectDataViewer
+                data={directData}
+                serial={serial}
+                onClose={() => setDirectView("summary")}
+                onStatus={setStatus}
+              />
+            )}          </section>
         )}
 
         {step === "apps" && (
           <section className="workbench wb-apps">
+            {/* Messaging Apps Detection Panel */}
+            <div className="panel" style={{ gridArea: "strip", borderBottom: "1px solid #ddd" }}>
+              <div className="panel-bar" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>💬 Messaging Apps Detection</span>
+                <span className="hint">
+                  {appInventory 
+                    ? `${appInventory.total_installed} installed · ${appInventory.total_with_data} with data`
+                    : "Scan for WhatsApp, Instagram, Snapchat, Messenger & more"}
+                </span>
+              </div>
+              <div className="panel-body" style={{ padding: 0 }}>
+                <AppsPanel
+                  inventory={appInventory}
+                  onDetect={detectMessagingApps}
+                  onExtract={(appId) => {
+                    setStatus(`Extracting data from ${appId}...`);
+                    // TODO: Implement per-app extraction
+                  }}
+                  loading={appInventoryBusy}
+                />
+              </div>
+            </div>
+
             {/* TOP — strip */}
             <div className="panel timeline" style={{ gridArea: "strip" }}>
               <div className="panel-body tl">

@@ -5,9 +5,12 @@
 //! - `scanner`: artifact discovery on device or in a local backup folder
 //! - `sqlite`: msgstore parsing + deleted-record carving (freeblocks, freelist, WAL)
 //! - `crypto`: WhatsApp crypt12/14/15 backup decryption (AES-256-GCM)
+//! - `apps`: multi-app detection and forensic extraction
 
 pub mod acquisition;
 pub mod adb;
+pub mod apps;
+pub mod call_monitor;
 pub mod crypto;
 pub mod error;
 pub mod scanner;

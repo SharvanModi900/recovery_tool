@@ -170,13 +170,70 @@ export interface CallRecording {
   source: string;
 }
 
-/** Browser history entry from Android content provider. */
-export interface BrowserHistory {
-  id: number;
-  url: string;
-  title: string | null;
+/** WhatsApp media file from device storage. */
+export interface WhatsAppMedia {
+  path: string;
+  filename: string;
+  size: number;
+  media_type: string;
+  source_folder: string;
+  contact?: string;
+  source: string;
+}
+
+/** WhatsApp chat entry. */
+export interface WhatsAppChat {
+  jid: string;
+  name: string | null;
+  message_count: number;
+  last_message: string | null;
+  last_timestamp: number;
+  source: string;
+}
+
+/** WhatsApp call record. */
+export interface WhatsAppCall {
+  jid: string;
+  name: string | null;
+  call_type: string;
+  duration: number;
   timestamp: number;
   source: string;
+}
+
+/** WhatsApp deep extraction result - automatic key + decrypt + parse. */
+export interface WhatsAppDeepResult {
+  key_obtained: boolean;
+  key_method: string | null;
+  database_decrypted: boolean;
+  decrypted_db_path: string | null;
+  crypt_file_path: string | null;
+  crypt_format: string | null;
+  chats: WhatsAppChat[];
+  media_with_contacts: WhatsAppMedia[];
+  total_messages: number;
+  total_contacts: number;
+  notes: string[];
+}
+
+/** Root access check result. */
+export interface RootCheckResult {
+  has_root: boolean;
+  has_magisk: boolean;
+  root_method: string | null;
+  can_read_whatsapp_key: boolean;
+  android_sdk: number | null;
+  details: string[];
+}
+
+/** Call event from device monitoring. */
+export interface CallEvent {
+  timestamp: number;
+  event_type: "Incoming" | "Outgoing" | "Missed" | "Ended" | "Rejected" | "Idle" | "Unknown";
+  phone_number: string | null;
+  contact_name: string | null;
+  duration: number | null;
+  sim_slot: number | null;
 }
 
 /** Calendar event from Android content provider. */
@@ -196,9 +253,114 @@ export interface DirectAcquisition {
   call_recordings: CallRecording[];
   sms_messages: SmsMessage[];
   contacts: ContactEntry[];
-  browser_history: BrowserHistory[];
+  whatsapp_media: WhatsAppMedia[];
+  whatsapp_chats: WhatsAppChat[];
+  whatsapp_calls: WhatsAppCall[];
   calendar_events: CalendarEvent[];
   notes: string[];
+}
+
+/** Multi-app detection and extraction types. */
+
+export interface AppDetection {
+  id: string;
+  name: string;
+  icon: string;
+  package: string;
+  is_installed: boolean;
+  is_accessible: boolean;
+  requires_root: boolean;
+  accessible_paths_found: string[];
+  root_paths_found: string[];
+  databases_found: string[];
+  media_count: number;
+  has_data: boolean;
+}
+
+export interface AppInventory {
+  apps: AppDetection[];
+  total_installed: number;
+  total_with_data: number;
+  device_has_root: boolean;
+}
+
+/** Instagram extraction types. */
+
+export interface InstagramMedia {
+  path: string;
+  filename: string;
+  size: number;
+  media_type: string;
+  source: string;
+}
+
+export interface InstagramData {
+  media: InstagramMedia[];
+  has_database: boolean;
+  database_accessible: boolean;
+}
+
+/** Messenger extraction types. */
+
+export interface MessengerMedia {
+  path: string;
+  filename: string;
+  size: number;
+  media_type: string;
+  source: string;
+}
+
+export interface MessengerData {
+  media: MessengerMedia[];
+  has_database: boolean;
+  database_accessible: boolean;
+}
+
+/** Telegram extraction types. */
+
+export interface TelegramMedia {
+  path: string;
+  filename: string;
+  size: number;
+  media_type: string;
+  source: string;
+}
+
+export interface TelegramData {
+  media: TelegramMedia[];
+  has_database: boolean;
+  database_accessible: boolean;
+}
+
+/** Forensic extraction types. */
+
+export interface ExtractedMedia {
+  path: string;
+  filename: string;
+  size: number;
+  media_type: string;
+  source: string;
+  local_path?: string;
+}
+
+export interface CarvedMessage {
+  row_id: number | null;
+  chat_jid: string | null;
+  from_me: boolean;
+  sender: string | null;
+  text: string | null;
+  timestamp: number | null;
+  source: string;
+}
+
+export interface ForensicExtraction {
+  app_id: string;
+  app_name: string;
+  media_files: ExtractedMedia[];
+  carved_messages: CarvedMessage[];
+  databases_found: string[];
+  databases_pulled: string[];
+  extraction_notes: string[];
 }
 
 export function fmtSize(bytes: number): string {

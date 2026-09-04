@@ -24,7 +24,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": ["$APPDATA/**", "$DOWNLOAD/**"]
+        "scope": ["$APPDATA/**", "$DOWNLOAD/**", "D:\\RecoverKit_Temp\\**"]
       }
     }
   },

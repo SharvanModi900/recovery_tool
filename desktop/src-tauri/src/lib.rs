@@ -858,6 +858,130 @@ async fn app_icon(app: AppHandle, serial: String, package: String) -> Result<Ico
 
 /// Forensic proof that a recovered file is genuine: reads the actual bytes,
 /// detects the true format from magic numbers and computes SHA-256.
+
+/// Detect all supported messaging apps installed on the device.
+#[tauri::command]
+async fn detect_apps(serial: String) -> Result<recovery_core::apps::AppInventory, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::apps::AppInventory, String> {
+        let adb = adb::AdbClient::default();
+        Ok(recovery_core::apps::detect_apps(&adb, &serial))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Get media files from a specific app.
+#[tauri::command]
+async fn get_app_media(serial: String, app_id: String) -> Result<Vec<(String, i64)>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<(String, i64)>, String> {
+        let adb = adb::AdbClient::default();
+        Ok(recovery_core::apps::get_app_media(&adb, &serial, &app_id))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Extract Instagram data from device.
+#[tauri::command]
+async fn extract_instagram(serial: String) -> Result<recovery_core::apps::instagram::InstagramData, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::apps::instagram::InstagramData, String> {
+        let adb = adb::AdbClient::default();
+        Ok(recovery_core::apps::instagram::extract_instagram(&adb, &serial))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Extract Messenger data from device.
+#[tauri::command]
+async fn extract_messenger(serial: String) -> Result<recovery_core::apps::messenger::MessengerData, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::apps::messenger::MessengerData, String> {
+        let adb = adb::AdbClient::default();
+        Ok(recovery_core::apps::messenger::extract_messenger(&adb, &serial))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Extract Telegram data from device.
+#[tauri::command]
+async fn extract_telegram(serial: String) -> Result<recovery_core::apps::telegram::TelegramData, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::apps::telegram::TelegramData, String> {
+        let adb = adb::AdbClient::default();
+        Ok(recovery_core::apps::telegram::extract_telegram(&adb, &serial))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Extract forensic data from any app with deleted record carving.
+#[tauri::command]
+async fn extract_app_forensic(serial: String, app_id: String) -> Result<recovery_core::apps::extraction::ForensicExtraction, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::apps::extraction::ForensicExtraction, String> {
+        let adb = adb::AdbClient::default();
+        let temp_dir = std::path::PathBuf::from("D:\\RecoverKit_Temp");
+        std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+        Ok(recovery_core::apps::extraction::extract_app(&adb, &serial, &app_id, &temp_dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Automatic WhatsApp deep extraction - key, decrypt, parse, extract chats.
+#[tauri::command]
+async fn extract_whatsapp_deep(serial: String) -> Result<recovery_core::acquisition::WhatsAppDeepResult, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::acquisition::WhatsAppDeepResult, String> {
+        let adb = adb::AdbClient::default();
+        recovery_core::acquisition::acquire_whatsapp_deep(&adb, &serial).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Check root access on the device.
+#[tauri::command]
+async fn check_root(serial: String) -> Result<recovery_core::acquisition::RootCheckResult, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::acquisition::RootCheckResult, String> {
+        let adb = adb::AdbClient::default();
+        Ok(recovery_core::acquisition::check_root_access(&adb, &serial))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Poll current call state from device.
+#[tauri::command]
+async fn poll_call_state(serial: String) -> Result<Option<recovery_core::call_monitor::CallEvent>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Option<recovery_core::call_monitor::CallEvent>, String> {
+        let adb = adb::AdbClient::default();
+        recovery_core::call_monitor::poll_call_state(&adb, &serial).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Check recent call log entries since a given timestamp.
+#[tauri::command]
+async fn check_recent_calls(serial: String, since_ms: i64) -> Result<Vec<recovery_core::call_monitor::CallEvent>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<recovery_core::call_monitor::CallEvent>, String> {
+        let adb = adb::AdbClient::default();
+        recovery_core::call_monitor::check_recent_calls(&adb, &serial, since_ms).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Get formatted call notification message.
+#[tauri::command]
+async fn get_call_notification(serial: String) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let adb = adb::AdbClient::default();
+        recovery_core::call_monitor::get_call_notification(&adb, &serial).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize)]
 struct MediaInspect {
     size: u64,
@@ -1197,6 +1321,30 @@ async fn direct_acquisition(serial: String) -> Result<DirectAcquisition, String>
     .map_err(|e| e.to_string())?
 }
 
+/// Pull a recording file from the device and return its local path.
+#[tauri::command]
+async fn pull_recording(serial: String, remote_path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        let adb = adb::AdbClient::default();
+        
+        // Create a temp directory on D: drive for pulled files
+        let temp_dir = std::path::PathBuf::from("D:\\RecoverKit_Temp");
+        std::fs::create_dir_all(&temp_dir).map_err(|e| e.to_string())?;
+        
+        // Extract filename from remote path
+        let filename = remote_path.rsplit('/').next().unwrap_or("recording");
+        let local_path = temp_dir.join(filename);
+        
+        // Pull the file
+        adb.pull(&serial, &remote_path, &local_path).map_err(|e| e.to_string())?;
+        
+        // Return the local path as a string
+        Ok(local_path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Milliseconds-since-epoch → simple local-ish timestamp string without extra crates.
 fn chrono_fmt(ms: i64) -> String {
     let secs = ms / 1000;
@@ -1246,6 +1394,18 @@ pub fn run() {
             import_sms_xml,
             import_vcf,
             direct_acquisition,
+            pull_recording,
+            detect_apps,
+            get_app_media,
+            extract_instagram,
+            extract_messenger,
+            extract_telegram,
+            extract_app_forensic,
+            extract_whatsapp_deep,
+            check_root,
+            poll_call_state,
+            check_recent_calls,
+            get_call_notification,
             start_screen_stream,
             stop_screen_stream,
             export_result

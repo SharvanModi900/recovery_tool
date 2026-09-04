@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppInfo, Device, DeviceMirror, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition } from "./types";
+import type { AppInfo, Device, DeviceMirror, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent } from "./types";
 
 export const listDevices = () => invoke<Device[]>("list_devices");
 
@@ -59,6 +59,42 @@ export const appIcon = (serial: string, pkg: string) =>
 
 export const directAcquisition = (serial: string) =>
   invoke<DirectAcquisition>("direct_acquisition", { serial });
+
+export const pullRecording = (serial: string, remotePath: string) =>
+  invoke<string>("pull_recording", { serial, remotePath });
+
+export const detectApps = (serial: string) =>
+  invoke<AppInventory>("detect_apps", { serial });
+
+export const getAppMedia = (serial: string, appId: string) =>
+  invoke<[string, number][]>("get_app_media", { serial, appId });
+
+export const extractInstagram = (serial: string) =>
+  invoke<InstagramData>("extract_instagram", { serial });
+
+export const extractMessenger = (serial: string) =>
+  invoke<MessengerData>("extract_messenger", { serial });
+
+export const extractTelegram = (serial: string) =>
+  invoke<TelegramData>("extract_telegram", { serial });
+
+export const extractAppForensic = (serial: string, appId: string) =>
+  invoke<ForensicExtraction>("extract_app_forensic", { serial, appId });
+
+export const extractWhatsappDeep = (serial: string) =>
+  invoke<WhatsAppDeepResult>("extract_whatsapp_deep", { serial });
+
+export const checkRoot = (serial: string) =>
+  invoke<RootCheckResult>("check_root", { serial });
+
+export const pollCallState = (serial: string) =>
+  invoke<CallEvent | null>("poll_call_state", { serial });
+
+export const checkRecentCalls = (serial: string, sinceMs: number) =>
+  invoke<CallEvent[]>("check_recent_calls", { serial, sinceMs });
+
+export const getCallNotification = (serial: string) =>
+  invoke<string | null>("get_call_notification", { serial });
 
 export const exportResult = (format: string, dest: string) =>
   invoke<string>("export_result", { format, dest });
