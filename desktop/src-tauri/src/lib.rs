@@ -10,8 +10,11 @@ use recovery_core::{
     acquisition::{self, DirectAcquisition},
     adb,
     adb::Device,
+    case_file,
     crypto,
     scanner::{self, ScanReport},
+    screen_capture,
+    sim_forensics,
     sms_xml,
     sqlite::{self, Analysis, Message, ParseResult},
     txt_export, vcf,
@@ -982,6 +985,31 @@ async fn get_call_notification(serial: String) -> Result<Option<String>, String>
     .map_err(|e| e.to_string())?
 }
 
+/// Poll live call state: `dumpsys telecom` (RINGING/DIALING/ACTIVE) with a
+/// call-log fallback for ENDED/MISSED entries.
+#[tauri::command]
+async fn poll_live_call(serial: String) -> Result<Option<recovery_core::call_monitor::CallEvent>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Option<recovery_core::call_monitor::CallEvent>, String> {
+        let adb = adb::AdbClient::default();
+        recovery_core::call_monitor::poll_live_call(&adb, &serial).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Discover call recordings on the device (broad vendor dirs + recursive sweep),
+/// each matched to its call-log entry by number/timestamp.
+#[tauri::command]
+async fn get_call_recordings(serial: String) -> Result<Vec<recovery_core::acquisition::CallRecording>, String> {
+    tokio::task::spawn_blocking(move || -> Result<Vec<recovery_core::acquisition::CallRecording>, String> {
+        let adb = adb::AdbClient::default();
+        let logs = acquisition::acquire_call_logs(&adb, &serial).unwrap_or_default();
+        acquisition::acquire_call_recordings(&adb, &serial, &logs).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[derive(Serialize)]
 struct MediaInspect {
     size: u64,
@@ -1345,6 +1373,376 @@ async fn pull_recording(serial: String, remote_path: String) -> Result<String, S
     .map_err(|e| e.to_string())?
 }
 
+// ── Screen capture history ───────────────────────────────────────────────
+
+/// Global flag for auto-capture thread.
+static AUTO_CAPTURE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Take a single screenshot, save it to the local DB, and return the capture info.
+#[tauri::command]
+fn take_screenshot_capture(app: AppHandle, serial: String, note: Option<String>) -> Result<screen_capture::ScreenCapture, String> {
+    let adb = adb::AdbClient::default();
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = screen_capture::ScreenCaptureDB::new(&base_dir).map_err(|e| e.to_string())?;
+    
+    // Get device model for metadata
+    let model = adb.prop(&serial, "ro.product.model").ok().flatten().filter(|s| !s.is_empty());
+    
+    screen_capture::capture_and_save(
+        &adb,
+        &serial,
+        model.as_deref(),
+        &db,
+        note.as_deref(),
+    ).map_err(|e| e.to_string())
+}
+
+/// Get all saved captures from the local DB.
+#[tauri::command]
+fn get_screen_captures(app: AppHandle, serial: Option<String>, limit: Option<usize>) -> Result<Vec<screen_capture::ScreenCapture>, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = screen_capture::ScreenCaptureDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.get_captures(serial.as_deref(), limit.unwrap_or(100)).map_err(|e| e.to_string())
+}
+
+/// Delete a capture by ID.
+#[tauri::command]
+fn delete_screen_capture(app: AppHandle, id: i64) -> Result<(), String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = screen_capture::ScreenCaptureDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.delete_capture(id).map_err(|e| e.to_string())
+}
+
+/// Start automatic periodic screen capture (every N seconds).
+#[tauri::command]
+fn start_auto_capture(app: AppHandle, serial: String, interval_secs: Option<u64>) -> Result<(), String> {
+    if AUTO_CAPTURE_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(()); // Already running
+    }
+    
+    AUTO_CAPTURE_RUNNING.store(true, std::sync::atomic::Ordering::SeqCst);
+    let running = AUTO_CAPTURE_RUNNING.load(std::sync::atomic::Ordering::SeqCst);
+    let _ = running; // suppress warning
+    
+    let interval = interval_secs.unwrap_or(10);
+    let app_clone = app.clone();
+    let serial_clone = serial.clone();
+    
+    std::thread::spawn(move || {
+        let adb = adb::AdbClient::default();
+        let base_dir = match app_clone.path().app_data_dir() {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let db = match screen_capture::ScreenCaptureDB::new(&base_dir) {
+            Ok(db) => db,
+            Err(_) => return,
+        };
+        let model = adb.prop(&serial_clone, "ro.product.model").ok().flatten().filter(|s| !s.is_empty());
+        
+        // Smart gate state — tracks the last saved frame hash + foreground app
+        let mut gate = screen_capture::CaptureState::new();
+        
+        while AUTO_CAPTURE_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+            match screen_capture::capture_smart(
+                &adb,
+                &serial_clone,
+                model.as_deref(),
+                &db,
+                &mut gate,
+            ) {
+                Ok(Some(capture)) => {
+                    // Meaningful, distinct screen — emit to frontend
+                    let _ = app_clone.emit("screen-capture-event", &capture);
+                }
+                Ok(None) => {
+                    // Skipped: dark/locked frame, or identical static screen — no event
+                }
+                Err(e) => {
+                    eprintln!("Auto-capture failed: {}", e);
+                }
+            }
+            
+            // Sleep for interval, checking running flag every second
+            for _ in 0..interval {
+                if !AUTO_CAPTURE_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    });
+    
+    Ok(())
+}
+
+/// Stop automatic periodic screen capture.
+#[tauri::command]
+fn stop_auto_capture() -> Result<(), String> {
+    AUTO_CAPTURE_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+// ── SIM / network forensics ──────────────────────────────────────────────
+
+/// Collect a live SIM/network snapshot from the device and persist it.
+#[tauri::command]
+fn collect_sim_snapshot(app: AppHandle, serial: String) -> Result<sim_forensics::SimSnapshot, String> {
+    run_blocking(move || -> Result<sim_forensics::SimSnapshot, String> {
+        let adb = adb::AdbClient::default();
+        let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let db = sim_forensics::SimHistoryDB::new(&base_dir).map_err(|e| e.to_string())?;
+        let snap = sim_forensics::collect_sim_snapshot(&adb, &serial).map_err(|e| e.to_string())?;
+        db.save_snapshot(&snap).map_err(|e| e.to_string())
+    })?
+}
+
+/// SIM snapshot history (newest first).
+#[tauri::command]
+fn get_sim_history(app: AppHandle, serial: Option<String>, limit: Option<usize>) -> Result<Vec<sim_forensics::SimSnapshot>, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = sim_forensics::SimHistoryDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.get_history(serial.as_deref(), limit.unwrap_or(50)).map_err(|e| e.to_string())
+}
+
+/// Mark a snapshot as the known-good baseline for its device.
+#[tauri::command]
+fn set_sim_baseline(app: AppHandle, id: i64) -> Result<(), String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = sim_forensics::SimHistoryDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.set_baseline(id).map_err(|e| e.to_string())
+}
+
+/// Delete a SIM snapshot from history.
+#[tauri::command]
+fn delete_sim_snapshot(app: AppHandle, id: i64) -> Result<(), String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = sim_forensics::SimHistoryDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.delete_snapshot(id).map_err(|e| e.to_string())
+}
+
+/// Collect a fresh snapshot, compare it against the baseline and the device's
+/// own historical SIM records, and return the swap verdict.
+#[tauri::command]
+fn check_sim_swap(app: AppHandle, serial: String) -> Result<sim_forensics::SimSwapReport, String> {
+    run_blocking(move || -> Result<sim_forensics::SimSwapReport, String> {
+        let adb = adb::AdbClient::default();
+        let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let db = sim_forensics::SimHistoryDB::new(&base_dir).map_err(|e| e.to_string())?;
+        sim_forensics::check_sim_swap(&adb, &serial, &db).map_err(|e| e.to_string())
+    })?
+}
+
+// ── Consolidated case file + chain of custody ────────────────────────────
+
+/// Create a new forensic case (auto-generates a case number when omitted).
+#[tauri::command]
+fn create_case(
+    app: AppHandle,
+    case_number: Option<String>,
+    title: Option<String>,
+    examiner: Option<String>,
+    subject: Option<String>,
+    device_serial: Option<String>,
+    device_model: Option<String>,
+    notes: Option<String>,
+) -> Result<case_file::Case, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.create_case(
+        case_number.as_deref().unwrap_or(""),
+        title.as_deref().unwrap_or(""),
+        examiner.as_deref().unwrap_or(""),
+        subject.as_deref().unwrap_or(""),
+        device_serial.as_deref(),
+        device_model.as_deref(),
+        notes.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// List all cases (newest first).
+#[tauri::command]
+fn list_cases(app: AppHandle) -> Result<Vec<case_file::Case>, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.list_cases().map_err(|e| e.to_string())
+}
+
+/// Case dashboard summary (counts, categories, chain status).
+#[tauri::command]
+fn get_case_summary(app: AppHandle, case_id: i64) -> Result<case_file::CaseSummary, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.summary(case_id).map_err(|e| e.to_string())
+}
+
+/// Evidence items in a case (newest first).
+#[tauri::command]
+fn get_case_evidence(app: AppHandle, case_id: i64) -> Result<Vec<case_file::EvidenceItem>, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.get_evidence(case_id).map_err(|e| e.to_string())
+}
+
+/// Chain-of-custody audit log for a case (chronological).
+#[tauri::command]
+fn get_case_audit(app: AppHandle, case_id: i64) -> Result<Vec<case_file::AuditEntry>, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.get_audit(case_id).map_err(|e| e.to_string())
+}
+
+/// Verify the tamper-evident hash chain of a case's audit log.
+#[tauri::command]
+fn verify_case_chain(app: AppHandle, case_id: i64) -> Result<case_file::ChainStatus, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.verify_chain(case_id).map_err(|e| e.to_string())
+}
+
+/// Acquire every source from a device fresh and bundle it all into the case.
+#[tauri::command]
+async fn consolidate_case(app: AppHandle, case_id: i64, serial: String, actor: String) -> Result<case_file::CaseSummary, String> {
+    tokio::task::spawn_blocking(move || -> Result<case_file::CaseSummary, String> {
+        let adb = adb::AdbClient::default();
+        let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+        db.add_audit(case_id, "ACQUISITION_START", &format!("Consolidating evidence from {serial}"), &actor)
+            .map_err(|e| e.to_string())?;
+
+        let acq = acquisition::acquire_all(&adb, &serial).map_err(|e| e.to_string())?;
+        // Re-consolidating rebuilds a clean bundle (the audit chain is kept).
+        db.clear_case_data(case_id).map_err(|e| e.to_string())?;
+        let n1 = case_file::ingest_direct_acquisition(&db, case_id, &acq, &actor).map_err(|e| e.to_string())?;
+
+        let sdb = screen_capture::ScreenCaptureDB::new(&base_dir).map_err(|e| e.to_string())?;
+        let caps = sdb.get_captures(Some(serial.as_str()), 500).map_err(|e| e.to_string())?;
+        let n2 = case_file::ingest_captures(&db, case_id, &caps, &actor).map_err(|e| e.to_string())?;
+
+        let simdb = sim_forensics::SimHistoryDB::new(&base_dir).map_err(|e| e.to_string())?;
+        let snaps = simdb.get_history(Some(serial.as_str()), 50).map_err(|e| e.to_string())?;
+        let n3 = case_file::ingest_sim(&db, case_id, &snaps, &actor).map_err(|e| e.to_string())?;
+
+        db.add_audit(case_id, "ACQUISITION_COMPLETE", &format!("Bundled {n1} acquisition + {n2} capture + {n3} SIM evidence items"), &actor)
+            .map_err(|e| e.to_string())?;
+        db.summary(case_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Mark a case closed (recorded in the chain of custody).
+#[tauri::command]
+fn close_case(app: AppHandle, case_id: i64, actor: Option<String>) -> Result<(), String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.close_case(case_id, actor.as_deref().unwrap_or("examiner")).map_err(|e| e.to_string())
+}
+
+/// Delete a case and all of its evidence + audit rows.
+#[tauri::command]
+fn delete_case(app: AppHandle, case_id: i64) -> Result<(), String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.delete_case(case_id).map_err(|e| e.to_string())
+}
+
+/// Export the consolidated case report (json | html) into the app data dir.
+#[tauri::command]
+fn export_case(app: AppHandle, case_id: i64, format: String) -> Result<String, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    let cases_dir = base_dir.join("cases");
+    std::fs::create_dir_all(&cases_dir).map_err(|e| e.to_string())?;
+    let (content, ext) = match format.as_str() {
+        "json" => (case_file::build_report_json(&db, case_id).map_err(|e| e.to_string())?, "json"),
+        _ => (case_file::build_report_html(&db, case_id).map_err(|e| e.to_string())?, "html"),
+    };
+    let path = cases_dir.join(format!("case_{case_id}_report.{ext}"));
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    db.add_audit(case_id, "EXPORT", &format!("Case report exported as {ext}"), "examiner")
+        .map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// Query the unified cross-source timeline for a case (kind / text / date filters).
+#[tauri::command]
+fn get_case_timeline(
+    app: AppHandle,
+    case_id: i64,
+    kind: Option<String>,
+    q: Option<String>,
+    from: Option<i64>,
+    to: Option<i64>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<case_file::TimelinePage, String> {
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.query_timeline(
+        case_id,
+        kind.as_deref(),
+        q.as_deref(),
+        from,
+        to,
+        limit.unwrap_or(500),
+        offset.unwrap_or(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Add the WhatsApp messages from the last recovery run into the case timeline so
+/// global search covers actual message text. Replaces prior message events.
+#[tauri::command]
+fn ingest_recovered_messages(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    case_id: i64,
+    actor: Option<String>,
+) -> Result<usize, String> {
+    let actor = actor.unwrap_or_else(|| "examiner".into());
+    let events: Vec<case_file::TimelineEvent> = {
+        let guard = state.last_result.lock().map_err(|e| e.to_string())?;
+        let result = guard
+            .as_ref()
+            .ok_or("No recovered WhatsApp data — run the Recover step first")?;
+        result
+            .messages
+            .iter()
+            .map(|m| case_file::TimelineEvent {
+                id: 0,
+                case_id,
+                timestamp: m.timestamp.unwrap_or(0),
+                kind: "whatsapp_message".to_string(),
+                title: format!(
+                    "WhatsApp · {}",
+                    if m.from_me {
+                        "You".to_string()
+                    } else {
+                        m.sender.clone().or(m.chat_jid.clone()).unwrap_or_else(|| "unknown".into())
+                    }
+                ),
+                detail: m.text.clone().unwrap_or_default(),
+                source: m.chat_jid.clone().unwrap_or_else(|| "WhatsApp".into()),
+                local_path: None,
+            })
+            .collect()
+    };
+    let base_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let db = case_file::CaseDB::new(&base_dir).map_err(|e| e.to_string())?;
+    db.clear_timeline_kind(case_id, "whatsapp_message").map_err(|e| e.to_string())?;
+    let n = db.add_timeline_events(&events).map_err(|e| e.to_string())?;
+    db.add_audit(
+        case_id,
+        "EVIDENCE_ADDED",
+        &format!("{n} recovered WhatsApp message(s) added to timeline"),
+        &actor,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
 /// Milliseconds-since-epoch → simple local-ish timestamp string without extra crates.
 fn chrono_fmt(ms: i64) -> String {
     let secs = ms / 1000;
@@ -1406,8 +1804,32 @@ pub fn run() {
             poll_call_state,
             check_recent_calls,
             get_call_notification,
+            poll_live_call,
+            get_call_recordings,
             start_screen_stream,
             stop_screen_stream,
+            take_screenshot_capture,
+            get_screen_captures,
+            delete_screen_capture,
+            start_auto_capture,
+            stop_auto_capture,
+            collect_sim_snapshot,
+            get_sim_history,
+            set_sim_baseline,
+            delete_sim_snapshot,
+            check_sim_swap,
+            create_case,
+            list_cases,
+            get_case_summary,
+            get_case_evidence,
+            get_case_audit,
+            verify_case_chain,
+            consolidate_case,
+            close_case,
+            delete_case,
+            export_case,
+            get_case_timeline,
+            ingest_recovered_messages,
             export_result
         ])
         .run(tauri::generate_context!())

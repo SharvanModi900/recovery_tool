@@ -168,6 +168,10 @@ export interface CallRecording {
   size: number;
   timestamp: number;
   source: string;
+  matched_number: string | null;
+  matched_name: string | null;
+  matched_call_type: string | null;
+  matched_timestamp: number | null;
 }
 
 /** WhatsApp media file from device storage. */
@@ -229,11 +233,73 @@ export interface RootCheckResult {
 /** Call event from device monitoring. */
 export interface CallEvent {
   timestamp: number;
-  event_type: "Incoming" | "Outgoing" | "Missed" | "Ended" | "Rejected" | "Idle" | "Unknown";
+  event_type: "Incoming" | "Outgoing" | "Missed" | "Ended" | "Rejected" | "Active" | "Idle" | "Unknown";
   phone_number: string | null;
   contact_name: string | null;
   duration: number | null;
   sim_slot: number | null;
+}
+
+/** Screen capture entry from local DB. */
+export interface ScreenCapture {
+  id: number;
+  timestamp: number;
+  file_path: string;
+  device_serial: string;
+  device_model: string | null;
+  note: string | null;
+  file_size: number;
+  dark_frame: boolean;
+}
+
+/** SIM / network identity snapshot (read-only device forensics). */
+export interface SimSnapshot {
+  id: number;
+  timestamp: number;
+  device_serial: string;
+  iccid: string | null;
+  msisdn: string | null;
+  imsi: string | null;
+  carrier_name: string | null;
+  operator_numeric: string | null;
+  mcc: string | null;
+  mnc: string | null;
+  country_iso: string | null;
+  sim_state: string | null;
+  slot_index: number | null;
+  network_operator: string | null;
+  network_type: string | null;
+  roaming: string | null;
+  baseband: string | null;
+  imei: string | null;
+  is_baseline: boolean;
+  fingerprint: string;
+}
+
+/** A SIM record seen by the device (active or historical, from dumpsys isub / siminfo). */
+export interface HistoricalSim {
+  iccid: string | null;
+  carrier: string | null;
+  msisdn: string | null;
+  slot: number | null;
+  mcc: string | null;
+  mnc: string | null;
+  active: boolean;
+}
+
+/** SIM-swap detection verdict. */
+export interface SimSwapVerdict {
+  risk: "NONE" | "LOW" | "HIGH";
+  changed: boolean;
+  reasons: string[];
+}
+
+/** Full SIM / Network panel payload. */
+export interface SimSwapReport {
+  snapshot: SimSnapshot;
+  baseline: SimSnapshot | null;
+  historical: HistoricalSim[];
+  verdict: SimSwapVerdict;
 }
 
 /** Calendar event from Android content provider. */
@@ -361,6 +427,96 @@ export interface ForensicExtraction {
   databases_found: string[];
   databases_pulled: string[];
   extraction_notes: string[];
+}
+
+/** A forensic case grouping evidence from one or more devices. */
+export interface Case {
+  id: number;
+  case_number: string;
+  title: string;
+  examiner: string;
+  subject: string;
+  device_serial: string | null;
+  device_model: string | null;
+  created_at: number;
+  closed_at: number | null;
+  notes: string | null;
+}
+
+/** One piece of evidence bundled into a case. */
+export interface EvidenceItem {
+  id: number;
+  case_id: number;
+  timestamp: number;
+  category: string;
+  source: string;
+  description: string;
+  item_count: number;
+  size_bytes: number;
+  sha256: string;
+  local_path: string | null;
+}
+
+/** A chain-of-custody audit log entry (tamper-evident hash chain). */
+export interface AuditEntry {
+  id: number;
+  case_id: number;
+  timestamp: number;
+  action: string;
+  detail: string;
+  actor: string;
+  hash_chain: string;
+}
+
+/** Per-category roll-up for the case dashboard. */
+export interface CategoryCount {
+  category: string;
+  evidence_items: number;
+  records: number;
+}
+
+/** Case dashboard summary payload. */
+export interface CaseSummary {
+  case_info: Case;
+  evidence_count: number;
+  total_records: number;
+  audit_count: number;
+  by_category: CategoryCount[];
+  earliest: number | null;
+  latest: number | null;
+  chain_valid: boolean;
+}
+
+/** Chain-of-custody verification result. */
+export interface ChainStatus {
+  valid: boolean;
+  entries: number;
+  broken_at: number | null;
+  message: string;
+}
+
+// ── Unified cross-source timeline ────────────────────────────────────────
+export interface TimelineEvent {
+  id: number;
+  case_id: number;
+  timestamp: number; // event time, Unix ms
+  kind: string; // call | sms | calendar | whatsapp_chat | whatsapp_call | whatsapp_message | recording | capture | sim
+  title: string;
+  detail: string;
+  source: string;
+  local_path: string | null;
+}
+
+export interface KindCount {
+  kind: string;
+  count: number;
+}
+
+export interface TimelinePage {
+  events: TimelineEvent[];
+  total: number;
+  kinds: KindCount[];
+  returned: number;
 }
 
 export function fmtSize(bytes: number): string {

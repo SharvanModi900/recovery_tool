@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppInfo, Device, DeviceMirror, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent } from "./types";
+import type { AppInfo, Device, DeviceMirror, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent, CallRecording, ScreenCapture, SimSnapshot, SimSwapReport, Case, CaseSummary, EvidenceItem, AuditEntry, ChainStatus, TimelinePage } from "./types";
 
 export const listDevices = () => invoke<Device[]>("list_devices");
 
@@ -96,5 +96,96 @@ export const checkRecentCalls = (serial: string, sinceMs: number) =>
 export const getCallNotification = (serial: string) =>
   invoke<string | null>("get_call_notification", { serial });
 
+export const pollLiveCall = (serial: string) =>
+  invoke<CallEvent | null>("poll_live_call", { serial });
+
+export const getCallRecordings = (serial: string) =>
+  invoke<CallRecording[]>("get_call_recordings", { serial });
+
+export const takeScreenshotCapture = (serial: string, note?: string) =>
+  invoke<ScreenCapture>("take_screenshot_capture", { serial, note });
+
+export const getScreenCaptures = (serial?: string, limit?: number) =>
+  invoke<ScreenCapture[]>("get_screen_captures", { serial, limit });
+
+export const deleteScreenCapture = (id: number) =>
+  invoke<void>("delete_screen_capture", { id });
+
+export const startAutoCapture = (serial: string, intervalSecs?: number) =>
+  invoke<void>("start_auto_capture", { serial, intervalSecs });
+
+export const stopAutoCapture = () =>
+  invoke<void>("stop_auto_capture");
+
+export const collectSimSnapshot = (serial: string) =>
+  invoke<SimSnapshot>("collect_sim_snapshot", { serial });
+
+export const getSimHistory = (serial?: string, limit?: number) =>
+  invoke<SimSnapshot[]>("get_sim_history", { serial, limit });
+
+export const setSimBaseline = (id: number) =>
+  invoke<void>("set_sim_baseline", { id });
+
+export const deleteSimSnapshot = (id: number) =>
+  invoke<void>("delete_sim_snapshot", { id });
+
+export const checkSimSwap = (serial: string) =>
+  invoke<SimSwapReport>("check_sim_swap", { serial });
+
 export const exportResult = (format: string, dest: string) =>
   invoke<string>("export_result", { format, dest });
+
+// ── Consolidated case file + chain of custody ──────────────────────────
+
+export const createCase = (fields: {
+  caseNumber?: string;
+  title?: string;
+  examiner?: string;
+  subject?: string;
+  deviceSerial?: string | null;
+  deviceModel?: string | null;
+  notes?: string;
+}) => invoke<Case>("create_case", fields);
+
+export const listCases = () => invoke<Case[]>("list_cases");
+
+export const getCaseSummary = (caseId: number) =>
+  invoke<CaseSummary>("get_case_summary", { caseId });
+
+export const getCaseEvidence = (caseId: number) =>
+  invoke<EvidenceItem[]>("get_case_evidence", { caseId });
+
+export const getCaseAudit = (caseId: number) =>
+  invoke<AuditEntry[]>("get_case_audit", { caseId });
+
+export const verifyCaseChain = (caseId: number) =>
+  invoke<ChainStatus>("verify_case_chain", { caseId });
+
+export const consolidateCase = (caseId: number, serial: string, actor: string) =>
+  invoke<CaseSummary>("consolidate_case", { caseId, serial, actor });
+
+export const closeCase = (caseId: number, actor?: string) =>
+  invoke<void>("close_case", { caseId, actor });
+
+export const deleteCase = (caseId: number) =>
+  invoke<void>("delete_case", { caseId });
+
+export const exportCase = (caseId: number, format: "json" | "html") =>
+  invoke<string>("export_case", { caseId, format });
+
+export const getCaseTimeline = (
+  caseId: number,
+  opts: { kind?: string | null; q?: string | null; from?: number | null; to?: number | null; limit?: number; offset?: number } = {},
+) =>
+  invoke<TimelinePage>("get_case_timeline", {
+    caseId,
+    kind: opts.kind ?? null,
+    q: opts.q ?? null,
+    from: opts.from ?? null,
+    to: opts.to ?? null,
+    limit: opts.limit ?? 500,
+    offset: opts.offset ?? 0,
+  });
+
+export const ingestRecoveredMessages = (caseId: number, actor?: string) =>
+  invoke<number>("ingest_recovered_messages", { caseId, actor: actor ?? null });

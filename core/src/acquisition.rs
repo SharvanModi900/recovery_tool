@@ -25,6 +25,12 @@ pub struct CallRecording {
     pub size: i64,
     pub timestamp: i64,
     pub source: String, // "live"
+    /// Call-log entry this recording was matched to (by number in filename or
+    /// by timestamp proximity to the call's end). Null when unmatched.
+    pub matched_number: Option<String>,
+    pub matched_name: Option<String>,
+    pub matched_call_type: Option<String>,
+    pub matched_timestamp: Option<i64>,
 }
 
 /// A single SMS/MMS message.
@@ -241,66 +247,32 @@ pub fn acquire_sms(adb: &AdbClient, serial: &str) -> Result<Vec<SmsMessage>> {
 /// Acquire contacts from the device (read-only).
 /// Uses the correct Android content provider URIs for contacts + phone numbers.
 pub fn acquire_contacts(adb: &AdbClient, serial: &str) -> Result<Vec<ContactEntry>> {
-    // Step 1: Query all contacts from the correct URI
-    // content://com.android.contacts/contacts is the standard URI on modern Android
-    let cmd = "content query --uri content://com.android.contacts/contacts --projection _id:display_name";
+    // Step 1: Query contacts with phone numbers and emails using the data URI
+    // Use contact_id which matches contacts._id (not raw_contact_id)
+    let cmd = "content query --uri content://com.android.contacts/data --projection contact_id:data1:data2:mimetype";
     let output = adb.exec_out(serial, &["sh", "-c", cmd])?;
     let text = String::from_utf8_lossy(&output);
 
-    // Parse contact IDs and names
-    let mut contact_map: Vec<(i64, Option<String>)> = Vec::new();
+    // Build maps: contact_id -> phone, contact_id -> email
+    let mut phone_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut email_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut name_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    
     for line in text.lines() {
         if !line.starts_with("Row:") {
             continue;
         }
-        // Strip "Row: N " prefix — the row number is glued to the first key
-        let stripped = line.strip_prefix("Row: ").unwrap_or(line);
-        // stripped is now like "0 _id=4278, display_name=vivo Customer Care"
-        // Skip the row number (first token before space)
-        let after_num = stripped.split_once(' ').map(|(_, rest)| rest).unwrap_or(stripped);
-        // after_num is now "_id=4278, display_name=vivo Customer Care"
-        let mut id: i64 = 0;
-        let mut name: Option<String> = None;
-        for part in after_num.split(", ") {
-            if let Some((key, val)) = part.split_once('=') {
-                let val = val.trim_matches('"');
-                match key.trim() {
-                    "_id" => id = val.parse().unwrap_or(0),
-                    "display_name" => {
-                        name = if val == "null" { None } else { Some(val.to_string()) }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if id > 0 {
-            contact_map.push((id, name));
-        }
-    }
-
-    // Step 2: Query ALL data rows and filter in Rust (avoids --where quoting issues on Android)
-    let data_cmd = "content query --uri content://com.android.contacts/data --projection raw_contact_id:data1:mimetype";
-    let data_output = adb.exec_out(serial, &["sh", "-c", data_cmd]).unwrap_or_default();
-    let data_text = String::from_utf8_lossy(&data_output);
-
-    // Build maps of raw_contact_id -> phone/email by filtering mimetype in Rust
-    let mut phone_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut email_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for line in data_text.lines() {
-        if !line.starts_with("Row:") {
-            continue;
-        }
-        // Strip "Row: N " prefix
         let stripped = line.strip_prefix("Row: ").unwrap_or(line);
         let after_num = stripped.split_once(' ').map(|(_, rest)| rest).unwrap_or(stripped);
-        let mut raw_id = String::new();
+        let mut contact_id = String::new();
         let mut data1 = String::new();
         let mut mimetype = String::new();
+        
         for part in after_num.split(", ") {
             if let Some((key, val)) = part.split_once('=') {
                 let val = val.trim_matches('"');
                 match key.trim() {
-                    "raw_contact_id" => raw_id = val.to_string(),
+                    "contact_id" => contact_id = val.to_string(),
                     "data1" => {
                         if val != "null" && !val.is_empty() {
                             data1 = val.to_string();
@@ -311,27 +283,73 @@ pub fn acquire_contacts(adb: &AdbClient, serial: &str) -> Result<Vec<ContactEntr
                 }
             }
         }
-        if raw_id.is_empty() || data1.is_empty() {
+        
+        if contact_id.is_empty() {
             continue;
         }
-        if mimetype == "vnd.android.cursor.item/phone_v2" {
-            phone_map.entry(raw_id).or_insert(data1);
-        } else if mimetype == "vnd.android.cursor.item/email_v2" {
-            email_map.entry(raw_id).or_insert(data1);
+        
+        if mimetype == "vnd.android.cursor.item/phone_v2" && !data1.is_empty() {
+            phone_map.entry(contact_id.clone()).or_insert(data1.clone());
+        } else if mimetype == "vnd.android.cursor.item/email_v2" && !data1.is_empty() {
+            email_map.entry(contact_id.clone()).or_insert_with(Vec::new).push(data1);
+        } else if mimetype == "vnd.android.cursor.item/name" && !data1.is_empty() {
+            name_map.entry(contact_id.clone()).or_insert(data1);
         }
     }
 
-    // Step 4: Build final contact list
+    // Step 2: Query display names from contacts table
+    let name_cmd = "content query --uri content://com.android.contacts/contacts --projection _id:display_name";
+    let name_output = adb.exec_out(serial, &["sh", "-c", name_cmd])?;
+    let name_text = String::from_utf8_lossy(&name_output);
+    
+    let mut contact_list: Vec<(i64, Option<String>)> = Vec::new();
+    for line in name_text.lines() {
+        if !line.starts_with("Row:") {
+            continue;
+        }
+        let stripped = line.strip_prefix("Row: ").unwrap_or(line);
+        let after_num = stripped.split_once(' ').map(|(_, rest)| rest).unwrap_or(stripped);
+        let mut id: i64 = 0;
+        let mut display_name: Option<String> = None;
+        
+        for part in after_num.split(", ") {
+            if let Some((key, val)) = part.split_once('=') {
+                let val = val.trim_matches('"');
+                match key.trim() {
+                    "_id" => id = val.parse().unwrap_or(0),
+                    "display_name" => {
+                        display_name = if val == "null" { None } else { Some(val.to_string()) }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if id > 0 {
+            contact_list.push((id, display_name));
+        }
+    }
+    
+    // Step 3: Try to get primary Google account email for contacts without email
+    let primary_email = get_primary_account_email(adb, serial);
+
+    // Step 4: Build final contact list with phone and email
     let mut contacts = Vec::new();
-    for (id, display_name) in &contact_map {
+    for (id, display_name) in &contact_list {
         let id_str = id.to_string();
         let phone = phone_map.get(&id_str).cloned();
-        let email = email_map.get(&id_str).cloned();
+        
+        // Get email from contact data, or use primary account email as fallback
+        let email = email_map.get(&id_str)
+            .and_then(|emails| emails.first().cloned())
+            .or_else(|| primary_email.clone());
+        
+        // Use display_name from contacts table, or fallback to name from data table
+        let final_name = display_name.clone().or_else(|| name_map.get(&id_str).cloned());
 
-        if display_name.is_some() || phone.is_some() {
+        if final_name.is_some() || phone.is_some() {
             contacts.push(ContactEntry {
                 id: *id,
-                display_name: display_name.clone(),
+                display_name: final_name,
                 phone,
                 email,
                 source: "live".to_string(),
@@ -342,61 +360,231 @@ pub fn acquire_contacts(adb: &AdbClient, serial: &str) -> Result<Vec<ContactEntr
     Ok(contacts)
 }
 
-/// Acquire call recording files from common directories.
-pub fn acquire_call_recordings(adb: &AdbClient, serial: &str) -> Result<Vec<CallRecording>> {
-    // Common call recording directories on Android
-    let search_dirs = vec![
+/// Get the primary Google account email from the device.
+fn get_primary_account_email(adb: &AdbClient, serial: &str) -> Option<String> {
+    // Method 1: Query accounts database
+    let cmd = "content query --uri content://com.android.contacts/accounts --projection name";
+    if let Ok(output) = adb.exec_out(serial, &["sh", "-c", cmd]) {
+        let text = String::from_utf8_lossy(&output);
+        for line in text.lines() {
+            if line.contains("@gmail.com") || line.contains("@google.com") {
+                // Extract email from the row
+                if let Some(idx) = line.find("name=") {
+                    let val = &line[idx + 5..];
+                    let email = val.split(',').next().unwrap_or(val).trim().trim_matches('"');
+                    if email.contains('@') {
+                        return Some(email.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    // Method 2: Use dumpsys to get accounts
+    if let Ok(output) = adb.exec_out(serial, &["sh", "-c", "dumpsys account | grep -E 'Account{|name:' | head -20"]) {
+        let text = String::from_utf8_lossy(&output);
+        for line in text.lines() {
+            let line = line.trim();
+            if (line.contains("@gmail.com") || line.contains("@google.com")) && !line.starts_with("Account {") {
+                // This might be an account name line
+                let email = line.trim().trim_matches('"').trim_matches(',');
+                if email.contains('@') && !email.contains(' ') {
+                    return Some(email.to_string());
+                }
+            }
+        }
+    }
+    
+    // Method 3: Get from settings
+    if let Ok(output) = adb.exec_out(serial, &["sh", "-c", "settings get secure user_setup_complete"]) {
+        // Device is set up, try to get the primary email
+        if let Ok(output) = adb.exec_out(serial, &["sh", "-c", "pm list packages com.google.android.gsf"]) {
+            let text = String::from_utf8_lossy(&output);
+            if text.contains("gsf") {
+                // Google Services Framework is installed, try to get account
+                if let Ok(output) = adb.exec_out(serial, &["sh", "-c", "content query --uri content://com.google.android.gsf.gservices --projection name:value --where \"name='android_id'\""]) {
+                    // We have GSF, but the email is in a different location
+                    // Fall through to return None
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Acquire call recording files from a broad set of vendor directories plus a
+/// bounded recursive `/sdcard` sweep, then match each file to a call-log entry.
+///
+/// `stat -c '%Y|%s|%n'` yields epoch mtime + size + path in one batch, so every
+/// recording carries a real timestamp that can be tied to a number + date. A
+/// fallback `ls -la` pass keeps older devices (no toybox `stat -c`) working.
+pub fn acquire_call_recordings(adb: &AdbClient, serial: &str, logs: &[CallLog]) -> Result<Vec<CallRecording>> {
+    // Curated call-recording roots across AOSP + major OEM skins.
+    let search_dirs = [
+        // Generic / AOSP dialer
         "/sdcard/CallRecorder",
-        "/sdcard/recordings",
         "/sdcard/CallRecordings",
+        "/sdcard/PhoneRecordings",
+        "/sdcard/recordings",
+        "/sdcard/Recordings",
+        "/sdcard/Record",
+        "/sdcard/Record/call",
         "/sdcard/DCIM/CallRecorder",
         "/sdcard/Music/CallRecorder",
-        "/sdcard/Android/data/com.android.dialer/files/CallRecorder",
+        "/sdcard/sounds",
+        // Samsung
         "/sdcard/Android/data/com.samsung.android.dialer/files/CallRecorder",
+        "/sdcard/Android/data/com.sec.android.app.voicenote/files",
+        // Google / AOSP dialer
+        "/sdcard/Android/data/com.android.dialer/files/CallRecorder",
         "/sdcard/Android/data/com.google.android.dialer/files/CallRecorder",
+        // Xiaomi / MIUI
+        "/sdcard/MIUI/sound_recorder",
+        "/sdcard/MIUI/sound_recorder/call_rec",
+        "/sdcard/MIUI/CallRecorder",
+        "/sdcard/Android/data/com.android.soundrecorder/files",
+        // Oppo / Realme (ColorOS)
+        "/sdcard/Recordings/Call Recordings",
+        "/sdcard/oppo_record",
+        "/sdcard/Phone/CallRecordings",
+        // Vivo (FuntouchOS)
+        "/sdcard/vivo_record",
+        "/sdcard/BBKRecord",
+        // OnePlus / Huawei / Honor
+        "/sdcard/oneplus_record",
+        "/sdcard/Huawei/CallRecord",
+        "/sdcard/Honor/CallRecord",
     ];
 
-    let mut recordings = Vec::new();
-    let mut seen_paths = std::collections::HashSet::new();
+    let audio_filter = "-iname '*.mp3' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' -o -iname '*.ogg' -o -iname '*.amr' -o -iname '*.awb' -o -iname '*.3gp'";
 
+    let mut recordings: Vec<CallRecording> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Primary: batched stat gives epoch mtime + size + path for every match.
     for dir in search_dirs {
-        // Use find + ls to get paths and sizes in one batch (no per-file stat)
         let cmd = format!(
-            "find {} -type f \\( -iname '*.mp3' -o -iname '*.m4a' -o -iname '*.wav' -o -iname '*.aac' -o -iname '*.ogg' -o -iname '*.amr' -o -iname '*.3gp' \\) -exec ls -la {{}} + 2>/dev/null",
-            dir
+            "find {} -type f \\( {} \\) -exec stat -c '%Y|%s|%n' {{}} + 2>/dev/null",
+            dir, audio_filter
         );
-        let output = adb.exec_out(serial, &["sh", "-c", &cmd]).unwrap_or_default();
-        let text = String::from_utf8_lossy(&output);
-
-        for line in text.lines() {
-            if !line.starts_with('-') {
-                continue;
-            }
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 8 {
-                continue;
-            }
-            let size = parts[4].parse::<i64>().unwrap_or(0);
-            let full_path = parts[7..].join(" ");
-
-            if full_path.is_empty() || seen_paths.contains(&full_path) {
-                continue;
-            }
-            seen_paths.insert(full_path.clone());
-
-            let filename = full_path.rsplit('/').next().unwrap_or(&full_path).to_string();
-
-            recordings.push(CallRecording {
-                path: full_path,
-                filename,
-                size,
-                timestamp: 0,
-                source: "live".to_string(),
-            });
+        if let Ok(out) = adb.exec_out(serial, &["sh", "-c", &cmd]) {
+            push_stat_lines(&String::from_utf8_lossy(&out), &mut recordings, &mut seen);
         }
     }
 
+    // Recursive /sdcard sweep, restricted to call/recording-looking paths so
+    // generic music is not swept in, but unknown OEM folders are still caught.
+    let sweep = format!(
+        "find /sdcard -type f \\( {} \\) \\( -ipath '*record*' -o -ipath '*call*' -o -ipath '*phone*' \\) -exec stat -c '%Y|%s|%n' {{}} + 2>/dev/null",
+        audio_filter
+    );
+    if let Ok(out) = adb.exec_out(serial, &["sh", "-c", &sweep]) {
+        push_stat_lines(&String::from_utf8_lossy(&out), &mut recordings, &mut seen);
+    }
+
+    // Fallback for devices without toybox `stat -c`: parse `ls -la` (no mtime).
+    if recordings.is_empty() {
+        for dir in search_dirs {
+            let cmd = format!(
+                "find {} -type f \\( {} \\) -exec ls -la {{}} + 2>/dev/null",
+                dir, audio_filter
+            );
+            if let Ok(out) = adb.exec_out(serial, &["sh", "-c", &cmd]) {
+                push_ls_lines(&String::from_utf8_lossy(&out), &mut recordings, &mut seen);
+            }
+        }
+    }
+
+    // Match each recording to a call-log entry (number in filename, else time).
+    for rec in recordings.iter_mut() {
+        if let Some(log) = match_recording_to_call(rec, logs) {
+            rec.matched_number = Some(log.number.clone());
+            rec.matched_name = log.name.clone();
+            rec.matched_call_type = Some(log.call_type.clone());
+            rec.matched_timestamp = Some(log.timestamp);
+        }
+    }
+
+    recordings.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     Ok(recordings)
+}
+
+/// Parse `stat -c '%Y|%s|%n'` output lines into recordings (dedup by path).
+fn push_stat_lines(text: &str, recordings: &mut Vec<CallRecording>, seen: &mut std::collections::HashSet<String>) {
+    for line in text.lines() {
+        if recordings.len() >= 1000 { break; }
+        let mut it = line.splitn(3, '|');
+        let (Some(m), Some(s), Some(p)) = (it.next(), it.next(), it.next()) else { continue };
+        let mtime: i64 = m.trim().parse().unwrap_or(0);
+        let size: i64 = s.trim().parse().unwrap_or(0);
+        let path = p.trim().to_string();
+        if path.is_empty() || !seen.insert(path.clone()) { continue; }
+        let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        recordings.push(CallRecording {
+            path,
+            filename,
+            size,
+            timestamp: mtime.saturating_mul(1000), // ms, aligned with CallLog
+            source: "live".to_string(),
+            matched_number: None,
+            matched_name: None,
+            matched_call_type: None,
+            matched_timestamp: None,
+        });
+    }
+}
+
+/// Fallback parser for `ls -la` output lines (no reliable epoch timestamp).
+fn push_ls_lines(text: &str, recordings: &mut Vec<CallRecording>, seen: &mut std::collections::HashSet<String>) {
+    for line in text.lines() {
+        if recordings.len() >= 1000 { break; }
+        if !line.starts_with('-') { continue; }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 8 { continue; }
+        let size = parts[4].parse::<i64>().unwrap_or(0);
+        let path = parts[7..].join(" ");
+        if path.is_empty() || !seen.insert(path.clone()) { continue; }
+        let filename = path.rsplit('/').next().unwrap_or(&path).to_string();
+        recordings.push(CallRecording {
+            path,
+            filename,
+            size,
+            timestamp: 0,
+            source: "live".to_string(),
+            matched_number: None,
+            matched_name: None,
+            matched_call_type: None,
+            matched_timestamp: None,
+        });
+    }
+}
+
+/// Tie a recording to a call-log entry: first by a phone number embedded in the
+/// filename, else by timestamp proximity to the call's end (±5 minutes).
+fn match_recording_to_call<'a>(rec: &CallRecording, logs: &'a [CallLog]) -> Option<&'a CallLog> {
+    let fname = rec.filename.to_lowercase();
+    for log in logs {
+        let digits: String = log.number.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() >= 7 && fname.contains(&digits) {
+            return Some(log);
+        }
+    }
+    if rec.timestamp > 0 {
+        let mut best: Option<(&CallLog, i64)> = None;
+        for log in logs {
+            if log.timestamp <= 0 { continue; }
+            let call_end = log.timestamp + log.duration.saturating_mul(1000);
+            let diff = (rec.timestamp - call_end).abs();
+            if diff <= 300_000 && best.map_or(true, |(_, d)| diff < d) {
+                best = Some((log, diff));
+            }
+        }
+        if let Some((log, _)) = best {
+            return Some(log);
+        }
+    }
+    None
 }
 
 /// Acquire WhatsApp media files from device storage.
@@ -640,7 +828,8 @@ pub fn acquire_all(adb: &AdbClient, serial: &str) -> Result<DirectAcquisition> {
         Err(e) => result.notes.push(format!("Call logs acquisition failed: {}", e)),
     }
 
-    match acquire_call_recordings(adb, serial) {
+    let recs = acquire_call_recordings(adb, serial, &result.call_logs);
+    match recs {
         Ok(recordings) => result.call_recordings = recordings,
         Err(e) => result.notes.push(format!("Call recordings acquisition failed: {}", e)),
     }
