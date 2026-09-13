@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppInfo, Device, DeviceMirror, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent, CallRecording, ScreenCapture, SimSnapshot, SimSwapReport, Case, CaseSummary, EvidenceItem, AuditEntry, ChainStatus, TimelinePage } from "./types";
+import type { AppInfo, Device, DeviceMirror, DeviceFullInfo, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent, CallRecording, ScreenCapture, SimSnapshot, SimSwapReport, Case, CaseSummary, EvidenceItem, AuditEntry, ChainStatus, TimelinePage, WifiNetwork, BluetoothDevice, DeviceAccount, PowerEvent, NotificationEntry, DictionaryWord, DeletedSmsResult, ThumbnailRecoveryResult, CarveResult, BrowserForensicsResult, LocationForensicsResult, NetworkForensicsResult, ApkAnalysisResult, UnifiedEvent, SourceReport, CameraCaptureResult, MicCaptureResult } from "./types";
 
 export const listDevices = () => invoke<Device[]>("list_devices");
 
@@ -39,7 +39,20 @@ export const inspectMedia = (path: string) => invoke<MediaInspect>("inspect_medi
 
 export const deviceMirror = (serial: string) => invoke<DeviceMirror>("device_mirror", { serial });
 
+export const deviceFullInfo = (serial: string) => invoke<DeviceFullInfo>("device_full_info", { serial });
+
 export const deviceScreenshot = (serial: string) => invoke<ScreenshotInfo>("device_screenshot", { serial });
+
+export const playDeviceRingtone = (serial: string) => invoke<void>("play_ringtone", { serial });
+export const startRingtoneLoop = (serial: string) => invoke<void>("start_ringtone_loop", { serial });
+export const stopRingtone = (serial: string) => invoke<void>("stop_ringtone", { serial });
+
+export const lockdownDevice = (serial: string) => invoke<void>("lockdown_device", { serial });
+export const releaseDevice = (serial: string) => invoke<void>("release_device", { serial });
+
+export const stopCharging = (serial: string) => invoke<string>("stop_charging", { serial });
+export const startCharging = (serial: string) => invoke<string>("start_charging", { serial });
+export const getBatteryStatus = (serial: string) => invoke<string>("get_battery_status", { serial });
 
 export const startScreenStream = (serial: string, fps: number = 10, mode: string = "normal") =>
   invoke<void>("start_screen_stream", { serial, fps, mode });
@@ -83,6 +96,9 @@ export const extractAppForensic = (serial: string, appId: string) =>
 
 export const extractWhatsappDeep = (serial: string) =>
   invoke<WhatsAppDeepResult>("extract_whatsapp_deep", { serial });
+
+export const extractWhatsappDowngrade = (serial: string) =>
+  invoke<WhatsAppDeepResult>("extract_whatsapp_downgrade", { serial });
 
 export const checkRoot = (serial: string) =>
   invoke<RootCheckResult>("check_root", { serial });
@@ -189,3 +205,65 @@ export const getCaseTimeline = (
 
 export const ingestRecoveredMessages = (caseId: number, actor?: string) =>
   invoke<number>("ingest_recovered_messages", { caseId, actor: actor ?? null });
+
+// ── Deep Forensics ──
+
+export const collectWifi = (serial: string) => invoke<WifiNetwork[]>("collect_wifi", { serial });
+
+export const collectBluetooth = (serial: string) => invoke<BluetoothDevice[]>("collect_bluetooth", { serial });
+
+export const collectAccounts = (serial: string) => invoke<DeviceAccount[]>("collect_accounts", { serial });
+
+export const collectPowerEvents = (serial: string) => invoke<PowerEvent[]>("collect_power_events", { serial });
+
+export const collectNotifications = (serial: string) => invoke<NotificationEntry[]>("collect_notifications", { serial });
+
+export const collectDictionary = (serial: string) => invoke<DictionaryWord[]>("collect_dictionary", { serial });
+
+// ── Phase 2: Deleted Data Recovery ──
+
+export const recoverDeletedSms = (serial: string) => invoke<DeletedSmsResult>("recover_deleted_sms", { serial });
+
+export const recoverThumbnails = (serial: string) => invoke<ThumbnailRecoveryResult>("recover_thumbnails", { serial });
+
+export const carveDeviceDb = (serial: string, dbPath: string, tables: string[]) => invoke<CarveResult>("carve_device_db", { serial, dbPath, tables });
+
+// ── Phase 3: Browser Forensics ──
+
+export const collectBrowserData = (serial: string) => invoke<BrowserForensicsResult>("collect_browser_data", { serial });
+
+// ── Phase 4: Location & Network ──
+
+export const collectLocationData = (serial: string) => invoke<LocationForensicsResult>("collect_location_data", { serial });
+
+export const collectNetworkArtifacts = (serial: string) => invoke<NetworkForensicsResult>("collect_network_artifacts", { serial });
+
+export const analyzeApks = (serial: string) => invoke<ApkAnalysisResult>("analyze_installed_apks", { serial });
+
+// ── Phase 5: Unified Timeline & Report ──
+
+export const buildUnifiedTimeline = (
+  calls: [number, string, string][],
+  sms: [number, string, string, boolean][],
+  whatsapp: [number, string, string, boolean][],
+  power: [number, string, number][],
+  notifications: [number, string, string][],
+  browser: [number, string, string][],
+  location: [number, number, number, string][],
+  serial?: string,
+) => invoke<UnifiedEvent[]>("build_timeline", {
+  calls, sms, whatsapp, power, notifications, browser, location, serial: serial ?? null,
+});
+
+export const generateForensicReport = (
+  serial: string,
+  model: string | null,
+  sources: SourceReport[],
+  events: UnifiedEvent[],
+) => invoke<string>("generate_report", { serial, model, sources, events });
+
+export const captureDevicePhoto = (serial: string) =>
+  invoke<CameraCaptureResult>("capture_device_photo", { serial });
+
+export const captureDeviceMic = (serial: string, duration: number = 5) =>
+  invoke<MicCaptureResult>("capture_device_mic", { serial, duration });

@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult } from "./types";
 import { fmtSize } from "./types";
-import { DirectDataViewer, TimelineView, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, CallNotificationPanel } from "./components";
+import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, CallNotificationPanel, DeepForensicsStep, DeletedDataStep, BrowserForensicsStep, NetworkLocationStep, DebugConsole, DeviceDetailsPanel, StandaloneTimeline } from "./components";
 import { useDeviceMirror } from "./hooks/useDeviceMirror";
 import { useCallMonitor } from "./hooks/useCallMonitor";
 import { useSimForensics } from "./hooks/useSimForensics";
@@ -103,28 +103,40 @@ const createEmptySession = (serial: string, model: string = ""): DeviceSession =
   exportBusy: false,
 });
 
-type Step = "connect" | "apps" | "scan" | "media" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "scan" | "media" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
 
 const STEPS: { id: Step; label: string; icon: string }[] = [
-  { id: "connect", label: "Connect", icon: "①" },
+  { id: "connect", label: "Connect", icon: "📱" },
   { id: "apps", label: "Apps", icon: "📦" },
-  { id: "scan", label: "Scan", icon: "②" },
+  { id: "scan", label: "Scan", icon: "🔎" },
   { id: "media", label: "Media", icon: "🖼" },
-  { id: "recover", label: "Recover", icon: "③" },
-  { id: "export", label: "Export", icon: "④" },
+  { id: "deep", label: "Forensics", icon: "🔬" },
+  { id: "timeline", label: "Timeline", icon: "🕐" },
+  { id: "recover", label: "Recover", icon: "⚙" },
+  { id: "export", label: "Export", icon: "📤" },
   { id: "case", label: "Case", icon: "🗂" },
-  { id: "timeline", label: "Timeline", icon: "📊" },
 ];
 
 // Workflow phases — groups related steps for visual navigation
 const PHASES: { label: string; icon: string; steps: Step[] }[] = [
   { label: "Collect", icon: "📥", steps: ["connect", "apps", "scan", "media"] },
-  { label: "Analyze", icon: "🔬", steps: ["recover", "export"] },
-  { label: "Investigate", icon: "🔍", steps: ["case", "timeline"] },
+  { label: "Analyze", icon: "🔬", steps: ["deep", "timeline", "recover"] },
+  { label: "Report", icon: "📊", steps: ["export", "case"] },
+];
+
+// Sub-steps hidden from sidebar but still accessible
+const FORENSICS_SUB: { id: Step; label: string; icon: string }[] = [
+  { id: "deep", label: "Deep Scan", icon: "🔍" },
+  { id: "deleted", label: "Deleted Data", icon: "🗑" },
+  { id: "browser", label: "Browser", icon: "🌐" },
+  { id: "network", label: "Network", icon: "📍" },
 ];
 
 export default function App() {
   const [step, setStep] = useState<Step>("connect");
+  const [debugOpen, setDebugOpen] = useState(false);
+  const [infoBarOpen, setInfoBarOpen] = useState(false);
+  const [deviceDetailsOpen, setDeviceDetailsOpen] = useState(false);
 
   // Multi-device session management
   const [sessions, setSessions] = useState<Map<string, DeviceSession>>(new Map());
@@ -227,8 +239,14 @@ export default function App() {
   // Direct acquisition (call logs, SMS, contacts)
   const [directData, setDirectData] = useState<DirectAcquisition | null>(null);
   const [directBusy, setDirectBusy] = useState(false);
+  const [cameraBusy, setCameraBusy] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState<string>("");
+  const [micBusy, setMicBusy] = useState(false);
+  const [micStatus, setMicStatus] = useState<string>("");
+  const [micDuration, setMicDuration] = useState<number>(5);
   const [directView, setDirectView] = useState<"summary" | "full">("summary");
-  const [connectTab, setConnectTab] = useState<"data" | "whatsapp" | "calls" | "sim">("data");
+  const [connectTab, setConnectTab] = useState<"overview" | "data" | "whatsapp" | "calls" | "sim">("overview");
+  const [chargingStopped, setChargingStopped] = useState(false);
   const [waDeepResult, setWaDeepResult] = useState<WhatsAppDeepResult | null>(null);
   const [waDeepBusy, setWaDeepBusy] = useState(false);
   const [rootCheck, setRootCheck] = useState<RootCheckResult | null>(null);
@@ -275,7 +293,7 @@ export default function App() {
     caseBusy, caseMsg, caseForm, caseEvidenceFilter,
     custodyHighlight, custodyRef,
     selectCase, handleCreateCase, handleConsolidate, handleVerifyChain,
-    handleExportCase, handleCloseCase, handleDeleteCase, handleTimelineJump,
+    handleExportCase, handleCloseCase, handleDeleteCase,
     setCaseForm, setCaseEvidenceFilter, loadCases,
   } = useCaseManagement({ serial, deviceModel: activeSession?.model, step, setStep, setStatus, setError });
 
@@ -285,6 +303,10 @@ export default function App() {
     apps: appInventory != null,
     scan: report != null,
     media: liveMedia != null || captures.length > 0,
+    deep: false,
+    deleted: false,
+    browser: false,
+    network: false,
     recover: result != null,
     export: !!exportedPath,
     case: caseSummary != null,
@@ -450,6 +472,48 @@ export default function App() {
       }
     }, "System data acquired");
 
+  const doCapturePhoto = () => {
+    setCameraBusy(true);
+    setCameraStatus("Opening camera app on device...");
+    api.captureDevicePhoto(serial)
+      .then((result) => {
+        if (result.success && result.local_path) {
+          setCameraStatus(`📸 Photo captured! File: ${result.filename}, Size: ${fmtSize(result.size)}`);
+          setStatus(`Photo captured — ${result.filename} (${fmtSize(result.size)}) saved to ${result.local_path}`);
+        } else {
+          setCameraStatus(`❌ No photo captured. ${result.notes.join(" | ")}`);
+        }
+      })
+      .catch((err) => {
+        setCameraStatus(`❌ Error: ${err}`);
+      })
+      .finally(() => {
+        setCameraBusy(false);
+        setTimeout(() => setCameraStatus(""), 10000);
+      });
+  };
+
+  const doCaptureMic = () => {
+    setMicBusy(true);
+    setMicStatus(`🎤 Recording ${micDuration} seconds from device mic...`);
+    api.captureDeviceMic(serial, micDuration)
+      .then((result) => {
+        if (result.success && result.local_path) {
+          setMicStatus(`🎤 Audio captured! File: ${result.filename}, Size: ${fmtSize(result.size)}, Duration: ${result.duration}s`);
+          setStatus(`Audio captured — ${result.filename} (${fmtSize(result.size)}, ${result.duration}s) saved to ${result.local_path}`);
+        } else {
+          setMicStatus(`❌ No audio captured. ${result.notes.join(" | ")}`);
+        }
+      })
+      .catch((err) => {
+        setMicStatus(`❌ Error: ${err}`);
+      })
+      .finally(() => {
+        setMicBusy(false);
+        setTimeout(() => setMicStatus(""), 10000);
+      });
+  };
+
   const doWhatsappDeep = () =>
     run(async () => {
       setWaDeepBusy(true);
@@ -480,6 +544,22 @@ export default function App() {
         setRootBusy(false);
       }
     }, "Root check complete");
+
+  const doWhatsappDowngrade = () =>
+    run(async () => {
+      setWaDeepBusy(true);
+      try {
+        const data = await api.extractWhatsappDowngrade(serial);
+        setWaDeepResult(data);
+        const status = data.database_decrypted
+          ? `WhatsApp downgrade extraction complete — ${data.total_messages} messages, ${data.total_contacts} chats`
+          : `Downgrade: ${data.key_obtained ? "Key obtained" : "No key"}, ${data.notes.slice(-1)[0] || "check notes"}`;
+        setStatus(status);
+        return data;
+      } finally {
+        setWaDeepBusy(false);
+      }
+    }, "WhatsApp downgrade extraction complete");
 
 
 
@@ -514,24 +594,39 @@ export default function App() {
     });
     if (!f) return;
     
-    // Copy key to temp location
-    const keyPath = f as string;
+    const userKeyPath = f as string;
     setWaDeepBusy(true);
     try {
-      // Use existing decrypt function with provided key
-      if (waDeepResult?.crypt_file_path) {
-        const outcome = await api.decryptBackup(
-          waDeepResult.crypt_file_path,
-          keyPath,
-          "D:\\RecoverKit_Temp\\msgstore_decrypted.db"
-        );
-        setStatus(`Decrypted! Format: ${outcome.format}, key_offset: ${outcome.key_offset}, iv_offset: ${outcome.iv_offset}`);
-        // Re-run extraction to parse the decrypted database
-        const data = await api.extractWhatsappDeep(serial);
-        setWaDeepResult(data);
+      if (!waDeepResult?.crypt_file_path) {
+        setStatus("No encrypted database found. Run Auto-Extract first to locate the database.");
+        return;
       }
+      
+      // Step 1: Decrypt the database with the user-provided key
+      const outcome = await api.decryptBackup(
+        waDeepResult.crypt_file_path,
+        userKeyPath,
+        "D:\\RecoverKit_Temp\\msgstore_decrypted.db"
+      );
+      setStatus(`Decrypted! Format: ${outcome.format}, key@${outcome.key_offset}, iv@${outcome.iv_offset}`);
+      
+      // Step 2: Parse the decrypted database to get messages
+      const res = await api.recoverDb("D:\\RecoverKit_Temp\\msgstore_decrypted.db", true, serial || undefined);
+      setResult(res);
+      
+      // Step 3: Update waDeepResult to reflect successful decryption
+      setWaDeepResult(prev => prev ? {
+        ...prev,
+        key_obtained: true,
+        key_method: "user-provided file",
+        database_decrypted: true,
+        decrypted_db_path: "D:\\RecoverKit_Temp\\msgstore_decrypted.db",
+        total_messages: res.total_messages,
+        total_contacts: res.chats,
+        notes: [...prev.notes, `Decrypted with user-provided key: ${outcome.format}`],
+      } : null);
     } catch (e: any) {
-      setStatus(`Decryption failed: ${e.message || e}`);
+      setStatus(`Key provision failed: ${e.message || e}`);
     } finally {
       setWaDeepBusy(false);
     }
@@ -849,43 +944,36 @@ export default function App() {
           </button>
         </div>
         {busy && <span className="pill busy-pill">working…</span>}
-        {serial && (
-          <span
-            className={`mirror-pill${mirrorBusy ? " busy" : ""}${mirrorErr ? " err" : ""}`}
-            title={mirrorErr ? mirrorErr : "Live mirror status"}
+        {serial && mirror && (
+          <button
+            className="device-info-toggle"
+            onClick={() => setInfoBarOpen(!infoBarOpen)}
+            title="Device info"
           >
-            <i>Mirror</i>
-            {mirrorErr
-              ? "⚠ capture error"
-              : mirrorBusy
-              ? "capturing…"
-              : shotTs
-              ? new Date(shotTs).toLocaleTimeString()
-              : "no snapshot"}
-          </span>
+            {mirror.model || "Device"} · {mirror.android || "—"} · 🔋{mirror.battery}
+            <span style={{ marginLeft: 4, fontSize: 8 }}>{infoBarOpen ? "▲" : "▼"}</span>
+          </button>
         )}
-        {mirror && (
-          <div className="header-telemetry">
-            <span title="Device model"><i>Model</i> {mirror.model || "—"}</span>
-            <span title="Android version"><i>Android</i> {mirror.android || "—"}</span>
-            <span title="Battery level"><i>Battery</i> {mirror.battery}</span>
-            <span title="Free / total storage"><i>Storage</i> {mirror.storage}</span>
-            <span title="Screen resolution"><i>Screen</i> {mirror.resolution}</span>
-            <span title="Time since boot"><i>Uptime</i> {mirror.uptime}</span>
-            <span title="Installed WhatsApp version"><i>WhatsApp</i> {mirror.whatsapp}</span>
-            <button
-              className="mini"
-              disabled={!serial || mirrorBusy}
-              onClick={() => serial && loadMirror(serial)}
-              title="Refresh telemetry"
-            >
-              ⟳
-            </button>
-          </div>
-        )}
-        
+        <div style={{ flex: 1 }} />
         <CallNotificationPanel callEvents={callEvents} onClear={() => setCallEvents([])} />
       </header>
+
+      {/* Collapsible device info bar */}
+      {infoBarOpen && serial && mirror && (
+        <div className="device-info-bar">
+          <span><i>Model</i> {mirror.model || "—"}</span>
+          <span><i>Android</i> {mirror.android || "—"}</span>
+          <span><i>Battery</i> {mirror.battery}</span>
+          <span><i>Storage</i> {mirror.storage}</span>
+          <span><i>Screen</i> {mirror.resolution}</span>
+          <span><i>Uptime</i> {mirror.uptime}</span>
+          <span><i>WhatsApp</i> {mirror.whatsapp}</span>
+          <button className="mini" disabled={mirrorBusy} onClick={() => loadMirror(serial)} title="Refresh">⟳</button>
+          <button className="mini" onClick={() => setDeviceDetailsOpen(true)} style={{ background: "var(--saffron)", color: "#fff", border: "1px solid var(--saffron-deep)" }}>
+            📋 Full Details
+          </button>
+        </div>
+      )}
       
       {/* Device Tab Bar for Multi-Device Support */}
       {sessions.size > 0 && (
@@ -933,17 +1021,34 @@ export default function App() {
                 const s = STEPS.find(st => st.id === stepId)!;
                 const done = stepDone[stepId];
                 const isActive = step === stepId;
+                const isForensics = stepId === "deep";
+                const showSub = isForensics && ["deep", "deleted", "browser", "network"].includes(step);
                 return (
-                  <button
-                    key={s.id}
-                    className={`nav${isActive ? " active" : ""}${done ? " done" : ""}`}
-                    onClick={() => setStep(s.id)}
-                    title={s.label}
-                  >
-                    <span className="nav-icon">{s.icon}</span>
-                    <span className="nav-label">{s.label}</span>
-                    {done && <span className="nav-check">✓</span>}
-                  </button>
+                  <div key={s.id}>
+                    <button
+                      className={`nav${isActive || showSub ? " active" : ""}${done ? " done" : ""}`}
+                      onClick={() => setStep(s.id)}
+                      title={s.label}
+                    >
+                      <span className="nav-icon">{s.icon}</span>
+                      <span className="nav-label">{s.label}</span>
+                      {done && <span className="nav-check">✓</span>}
+                    </button>
+                    {/* Forensics sub-tabs — shown only when inside forensic steps */}
+                    {showSub && (
+                      <div className="nav-sub">
+                        {FORENSICS_SUB.map((sub) => (
+                          <button
+                            key={sub.id}
+                            className={`nav-sub-item${step === sub.id ? " active" : ""}`}
+                            onClick={() => setStep(sub.id)}
+                          >
+                            <span>{sub.icon}</span> {sub.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -958,9 +1063,12 @@ export default function App() {
             connectTab={connectTab} setConnectTab={setConnectTab}
             directData={directData} directBusy={directBusy}
             onAcquire={doDirectAcquisition} onViewFull={() => setDirectView("full")}
+            cameraBusy={cameraBusy} cameraStatus={cameraStatus} onCapturePhoto={doCapturePhoto}
+            micBusy={micBusy} micStatus={micStatus} micDuration={micDuration} onMicDurationChange={setMicDuration} onCaptureMic={doCaptureMic}
             waDeepResult={waDeepResult} waDeepBusy={waDeepBusy}
             rootCheck={rootCheck} rootBusy={rootBusy}
             onWhatsappDeep={doWhatsappDeep} onCheckRoot={doCheckRoot}
+            onWhatsappDowngrade={doWhatsappDowngrade}
             onImportTxt={doImportTxt} onProvideKey={doProvideKey}
             callMonitorActive={callMonitorActive} callEvents={callEvents}
             currentCallNotification={currentCallNotification}
@@ -987,6 +1095,38 @@ export default function App() {
             onRefreshCaptures={loadCaptures} onDeleteCapture={deleteCapture}
             onAutoRefreshChange={setAutoRefresh}
             onStreamFpsChange={setStreamFps} onStreamModeChange={setStreamMode}
+            mirror={mirror}
+            onRingDevice={() => {
+              if (!serial) return;
+              setStatus("Ringing device...");
+              api.playDeviceRingtone(serial).then(() => {
+                setStatus("Device is ringing!");
+              }).catch((e: unknown) => setStatus(`Ring failed: ${e}`));
+            }}
+            onLockDevice={() => {
+              if (!serial) return;
+              setStatus("Locking device...");
+              api.lockdownDevice(serial).then(() => {
+                setStatus("Device locked!");
+              }).catch((e: unknown) => setStatus(`Lock failed: ${e}`));
+            }}
+            onToggleCharging={() => {
+              if (!serial) return;
+              if (chargingStopped) {
+                setStatus("Resuming charging...");
+                api.startCharging(serial).then(() => {
+                  setChargingStopped(false);
+                  setStatus("Charging resumed");
+                }).catch((e: unknown) => setStatus(`Failed: ${e}`));
+              } else {
+                setStatus("Stopping charging...");
+                api.stopCharging(serial).then(() => {
+                  setChargingStopped(true);
+                  setStatus("Charging stopped");
+                }).catch((e: unknown) => setStatus(`Failed: ${e}`));
+              }
+            }}
+            chargingStopped={chargingStopped}
             onGoTo={setStep}
           />
           {directView === "full" && directData && (
@@ -1038,6 +1178,22 @@ export default function App() {
             onShowImagesChange={setShowImages} onShowVideosChange={setShowVideos}
             onGoTo={setStep}
           />
+        )}
+
+        {step === "deep" && (
+          <DeepForensicsStep serial={serial} onGoTo={setStep} />
+        )}
+
+        {step === "deleted" && (
+          <DeletedDataStep serial={serial} onGoTo={setStep} />
+        )}
+
+        {step === "browser" && (
+          <BrowserForensicsStep serial={serial} onGoTo={setStep} />
+        )}
+
+        {step === "network" && (
+          <NetworkLocationStep serial={serial} onGoTo={setStep} />
         )}
 
         {step === "recover" && (
@@ -1096,7 +1252,7 @@ export default function App() {
         )}
 
         {step === "timeline" && (
-          <TimelineView caseId={activeCaseId} serial={serial} hasRecovered={!!result} onJump={handleTimelineJump} onGoToCase={() => setStep("case")} onStatus={setStatus} />
+          <StandaloneTimeline serial={serial} />
         )}
         </main>
       </div>
@@ -1104,8 +1260,43 @@ export default function App() {
       <footer>
         {status && !busy && <span className="pill ok">{status}</span>}
         {error && <span className="pill err" title={error}>{error.length > 110 ? error.slice(0, 110) + "…" : error}</span>}
-        <span className="foot-right">read-only by design · recovery-core v0.1.0</span>
+        <span className="foot-right">
+          <button
+            className="mini"
+            onClick={() => setDebugOpen(!debugOpen)}
+            title="Toggle debug console"
+            style={{
+              background: debugOpen ? "#3498db" : "transparent",
+              color: debugOpen ? "#fff" : "var(--muted)",
+              border: debugOpen ? "1px solid #2980b9" : "1px solid var(--line)",
+              marginRight: 8,
+            }}
+          >
+            🐛 Debug
+          </button>
+          read-only by design · v0.1.0
+        </span>
       </footer>
+
+      {/* Debug Console */}
+      <DebugConsole
+        serial={serial}
+        isOpen={debugOpen}
+        onClose={() => setDebugOpen(false)}
+      />
+
+      {/* Device Details Overlay */}
+      {deviceDetailsOpen && (
+        <div className="device-details-overlay">
+          <div className="device-details-header">
+            <h2>📱 Device Details</h2>
+            <button className="mini" onClick={() => setDeviceDetailsOpen(false)}>✕ Close</button>
+          </div>
+          <div className="device-details-body">
+            <DeviceDetailsPanel serial={serial} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

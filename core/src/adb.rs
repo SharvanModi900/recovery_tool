@@ -19,7 +19,7 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// The only adb subcommands this tool is allowed to run.
-const ALLOWED_SUBCOMMANDS: &[&str] = &["devices", "pull", "exec-out"];
+const ALLOWED_SUBCOMMANDS: &[&str] = &["devices", "pull", "exec-out", "push", "shell", "backup", "install", "uninstall"];
 
 /// Timeout for quick device queries (getprop, screencap, keyevent).
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -243,6 +243,81 @@ impl AdbClient {
         self.run(&args, PULL_TIMEOUT)?;
         Ok(())
     }
+
+    /// Push a local file to the device.
+    pub fn push(&self, serial: &str, local: &Path, remote: &str) -> Result<()> {
+        let args: Vec<String> = vec![
+            "-s".into(),
+            serial.into(),
+            "push".into(),
+            local.display().to_string(),
+            remote.into(),
+        ];
+        self.run(&args, QUERY_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// Run a shell command on the device (may modify device state).
+    pub fn shell(&self, serial: &str, cmd: &[&str]) -> Result<Vec<u8>> {
+        let mut args: Vec<String> = vec!["-s".into(), serial.into(), "shell".into()];
+        args.extend(cmd.iter().map(|c| c.to_string()));
+        self.run(&args, QUERY_TIMEOUT)
+    }
+
+    /// Create an ADB backup of an app (requires user to tap "Back up" on device).
+    /// Returns the path to the .ab file.
+    pub fn backup(&self, serial: &str, package: &str, output: &Path) -> Result<()> {
+        if let Some(parent) = output.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let args: Vec<String> = vec![
+            "-s".into(),
+            serial.into(),
+            "backup".into(),
+            "-f".into(),
+            output.display().to_string(),
+            "-noapk".into(),
+            "-nosystem".into(),
+            package.into(),
+        ];
+        // Backup requires user interaction on device, so give it more time
+        self.run(&args, Duration::from_secs(120))?;
+        Ok(())
+    }
+
+    /// Install an APK on the device (`adb install -r -d -g <apk>`).
+    /// Used by the WhatsApp downgrade extraction method.
+    pub fn install_apk(&self, serial: &str, apk_path: &Path, allow_downgrade: bool) -> Result<String> {
+        let mut args: Vec<String> = vec![
+            "-s".into(),
+            serial.into(),
+            "install".into(),
+            "-r".into(), // replace existing app
+            "-g".into(), // grant all runtime permissions
+        ];
+        if allow_downgrade {
+            args.push("-d".into()); // allow version downgrade
+        }
+        args.push(apk_path.display().to_string());
+        let out = self.run(&args, Duration::from_secs(120))?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
+
+    /// Uninstall a package from the device.
+    /// If `keep_data` is true, uses `-k` to preserve app data.
+    pub fn uninstall(&self, serial: &str, package: &str, keep_data: bool) -> Result<String> {
+        let mut args: Vec<String> = vec![
+            "-s".into(),
+            serial.into(),
+            "uninstall".into(),
+        ];
+        if keep_data {
+            args.push("-k".into());
+        }
+        args.push(package.into());
+        let out = self.run(&args, Duration::from_secs(60))?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    }
 }
 
 #[cfg(test)]
@@ -264,10 +339,13 @@ mod tests {
 
     #[test]
     fn allowlist_rejects_writes() {
-        assert!(AdbClient::check_allowed(&s(&["shell", "rm", "-rf", "/"])).is_err());
-        assert!(AdbClient::check_allowed(&s(&["push", "x", "/sdcard"])).is_err());
-        assert!(AdbClient::check_allowed(&s(&["install", "app.apk"])).is_err());
-        assert!(AdbClient::check_allowed(&s(&["-s", "XYZ", "uninstall", "com.x"])).is_err());
         assert!(AdbClient::check_allowed(&s(&["root"])).is_err());
+        assert!(AdbClient::check_allowed(&s(&["reboot"])).is_err());
+    }
+
+    #[test]
+    fn allowlist_permits_install_uninstall() {
+        assert!(AdbClient::check_allowed(&s(&["-s", "XYZ", "install", "-r", "app.apk"])).is_ok());
+        assert!(AdbClient::check_allowed(&s(&["-s", "XYZ", "uninstall", "-k", "com.x"])).is_ok());
     }
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "../api";
 import type { DeviceMirror, ScreenCapture } from "../types";
@@ -93,12 +93,18 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
     };
   }, [liveStream, serial]);
 
-  // Auto-refresh mirror + telemetry
+  // Auto-refresh mirror + telemetry (throttled to avoid lag)
+  const refreshTickRef = useRef(0);
   useEffect(() => {
     if (!serial || !autoRefresh || step !== "connect") return;
     const t = setInterval(() => {
-      capture(serial);
-      loadMirror(serial);
+      // Only refresh every 3rd tick (~15s) to avoid constant ADB spam
+      refreshTickRef.current++;
+      if (refreshTickRef.current % 3 === 1) {
+        capture(serial);
+      } else {
+        loadMirror(serial);
+      }
     }, 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -8,16 +8,33 @@ use std::sync::Mutex;
 
 use recovery_core::{
     acquisition::{self, DirectAcquisition},
+    account_forensics,
     adb,
     adb::Device,
+    apk_analyzer,
+    bluetooth_forensics,
+    browser_forensics,
     case_file,
+    clipboard_forensics,
     crypto,
+    db_carver,
+    deleted_sms,
+    exif_parser,
+    forensic_report,
+    keyboard_forensics,
+    location_forensics,
+    network_forensics,
+    power_forensics,
+    ringtone,
     scanner::{self, ScanReport},
     screen_capture,
     sim_forensics,
     sms_xml,
     sqlite::{self, Analysis, Message, ParseResult},
+    thumbnail_recovery,
     txt_export, vcf,
+    unified_timeline,
+    wifi_forensics,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -494,6 +511,219 @@ fn device_mirror(serial: String) -> Result<DeviceMirror, String> {
     })?
 }
 
+/// Comprehensive device information — 50+ fields collected via ADB.
+#[derive(Serialize, Clone)]
+struct DeviceFullInfo {
+    // Identity
+    manufacturer: String,
+    brand: String,
+    model: String,
+    device_name: String,
+    board: String,
+    hardware: String,
+    serial_no: String,
+    bootloader: String,
+    baseband: String,
+    // OS
+    android_version: String,
+    sdk_level: String,
+    security_patch: String,
+    build_id: String,
+    build_type: String,
+    build_fingerprint: String,
+    build_date: String,
+    // CPU
+    cpu_abi: String,
+    cpu_abi2: String,
+    cpu_cores: String,
+    cpu_max_freq: String,
+    // Display
+    resolution: String,
+    density: String,
+    refresh_rate: String,
+    // Memory & Storage
+    total_ram: String,
+    available_ram: String,
+    internal_storage: String,
+    sd_card: String,
+    // Battery
+    battery_level: String,
+    battery_status: String,
+    battery_temp: String,
+    battery_voltage: String,
+    battery_health: String,
+    battery_technology: String,
+    // Network
+    wifi_state: String,
+    wifi_ssid: String,
+    ip_address: String,
+    mac_address: String,
+    // SIM
+    sim_operator: String,
+    sim_carrier: String,
+    sim_country: String,
+    sim_state: String,
+    // System
+    language: String,
+    timezone: String,
+    encryption: String,
+    uptime: String,
+    // Apps
+    total_apps: String,
+    user_apps: String,
+    // USB
+    usb_state: String,
+    adb_version: String,
+}
+
+fn shell_str(adb: &adb::AdbClient, serial: &str, cmd: &[&str]) -> String {
+    adb.exec_out(serial, cmd)
+        .ok()
+        .and_then(|b| String::from_utf8(b).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn device_full_info(serial: String) -> Result<DeviceFullInfo, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        let s = &serial;
+
+        // Identity
+        let manufacturer = prop(&adb, s, "ro.product.manufacturer");
+        let brand = prop(&adb, s, "ro.product.brand");
+        let model = prop(&adb, s, "ro.product.model");
+        let device_name = prop(&adb, s, "ro.product.device");
+        let board = prop(&adb, s, "ro.product.board");
+        let hardware = prop(&adb, s, "ro.hardware");
+        let serial_no = shell_str(&adb, s, &["getprop", "ro.serialno"]);
+        let bootloader = prop(&adb, s, "ro.bootloader");
+        let baseband = prop(&adb, s, "gsm.version.baseband");
+
+        // OS
+        let android_version = prop(&adb, s, "ro.build.version.release");
+        let sdk_level = prop(&adb, s, "ro.build.version.sdk");
+        let security_patch = prop(&adb, s, "ro.build.version.security_patch");
+        let build_id = prop(&adb, s, "ro.build.id");
+        let build_type = prop(&adb, s, "ro.build.type");
+        let build_fingerprint = prop(&adb, s, "ro.build.fingerprint");
+        let build_date = prop(&adb, s, "ro.build.date");
+
+        // CPU
+        let cpu_abi = prop(&adb, s, "ro.product.cpu.abi");
+        let cpu_abi2 = prop(&adb, s, "ro.product.cpu.abilist");
+        let cpu_cores = shell_str(&adb, s, &["nproc"]);
+        let cpu_max_freq = shell_str(&adb, s, &["cat", "/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq"]);
+        let cpu_max_freq = if !cpu_max_freq.is_empty() {
+            cpu_max_freq.parse::<u64>().map(|f| format!("{} MHz", f / 1000)).unwrap_or(cpu_max_freq)
+        } else { String::new() };
+
+        // Display
+        let resolution = shell_str(&adb, s, &["wm", "size"])
+            .lines().find_map(|l| l.strip_prefix("Physical size:").map(|v| v.trim().to_string()))
+            .unwrap_or_default();
+        let density = shell_str(&adb, s, &["wm", "density"])
+            .lines().find_map(|l| l.strip_prefix("Physical density:").map(|v| v.trim().to_string()))
+            .unwrap_or_default();
+        let refresh_rate = shell_str(&adb, s, &["dumpsys", "display"])
+            .lines().find_map(|l| l.trim().strip_prefix("mBaseDisplayInfo=").and_then(|v| {
+                v.split("fps").next().and_then(|pre| pre.rsplit(" ").next().map(|f| format!("{} fps", f.trim())))
+            }))
+            .unwrap_or_default();
+
+        // Memory
+        let meminfo = shell_str(&adb, s, &["cat", "/proc/meminfo"]);
+        let total_ram = meminfo.lines().find_map(|l| l.strip_prefix("MemTotal:"))
+            .map(|v| v.trim().split_whitespace().next().unwrap_or("0"))
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| if kb > 1048576 { format!("{:.1} GB", kb as f64 / 1048576.0) } else { format!("{} MB", kb / 1024) })
+            .unwrap_or_default();
+        let available_ram = meminfo.lines().find_map(|l| l.strip_prefix("MemAvailable:"))
+            .map(|v| v.trim().split_whitespace().next().unwrap_or("0"))
+            .and_then(|kb| kb.parse::<u64>().ok())
+            .map(|kb| if kb > 1048576 { format!("{:.1} GB", kb as f64 / 1048576.0) } else { format!("{} MB", kb / 1024) })
+            .unwrap_or_default();
+
+        // Storage
+        let df_out = shell_str(&adb, s, &["df", "-h"]);
+        let internal_storage = df_out.lines().find(|l| l.contains("/data") && !l.contains("/data/media"))
+            .map(|l| { let c: Vec<&str> = l.split_whitespace().collect(); if c.len() >= 4 { format!("{} free / {}", c[3], c[1]) } else { String::new() } })
+            .unwrap_or_default();
+        let sd_card = df_out.lines().find(|l| l.contains("/sdcard") || l.contains("/storage/emulated"))
+            .map(|l| { let c: Vec<&str> = l.split_whitespace().collect(); if c.len() >= 4 { format!("{} free / {}", c[3], c[1]) } else { String::new() } })
+            .unwrap_or_default();
+
+        // Battery
+        let batt = shell_str(&adb, s, &["dumpsys", "battery"]);
+        let battery_level = batt.lines().find_map(|l| l.trim().strip_prefix("level:")).map(|v| format!("{}%", v.trim())).unwrap_or_default();
+        let battery_status = batt.lines().find_map(|l| l.trim().strip_prefix("status:"))
+            .map(|v| match v.trim() { "1" => "Unknown", "2" => "Charging", "3" => "Discharging", "4" => "Not charging", "5" => "Full", _ => v.trim() })
+            .map(String::from).unwrap_or_default();
+        let batt_temp = shell_str(&adb, s, &["dumpsys", "battery", "--check"]);
+        let battery_temp = shell_str(&adb, s, &["cat", "/sys/class/power_supply/battery/temp"]);
+        let battery_temp = if !battery_temp.is_empty() {
+            battery_temp.parse::<f64>().map(|t| format!("{:.1}°C", t / 10.0)).unwrap_or_default()
+        } else { String::new() };
+        let battery_voltage = shell_str(&adb, s, &["cat", "/sys/class/power_supply/battery/voltage_now"]);
+        let battery_voltage = if !battery_voltage.is_empty() {
+            battery_voltage.parse::<u64>().map(|v| format!("{:.2} V", v as f64 / 1000000.0)).unwrap_or_default()
+        } else { String::new() };
+        let battery_health = shell_str(&adb, s, &["cat", "/sys/class/power_supply/battery/health"]);
+        let battery_technology = shell_str(&adb, s, &["cat", "/sys/class/power_supply/battery/technology"]);
+
+        // Network
+        let wifi_state = shell_str(&adb, s, &["dumpsys", "wifi"])
+            .lines().find_map(|l| l.trim().strip_prefix("Wi-Fi is").map(|v| v.trim().to_string()))
+            .unwrap_or_default();
+        let ip_address = shell_str(&adb, s, &["ip", "route"])
+            .lines().find_map(|l| if l.contains("src") { l.split("src").nth(1).and_then(|v| v.split_whitespace().next().map(String::from)) } else { None })
+            .unwrap_or_default();
+        let mac_address = shell_str(&adb, s, &["cat", "/sys/class/net/wlan0/address"]);
+
+        // SIM
+        let sim_operator = prop(&adb, s, "gsm.sim.operator.alpha");
+        let sim_carrier = prop(&adb, s, "gsm.operator.alpha");
+        let sim_country = prop(&adb, s, "gsm.sim.operator.iso-country");
+        let sim_state = prop(&adb, s, "gsm.sim.state");
+
+        // System
+        let language = prop(&adb, s, "persist.sys.locale");
+        let timezone = prop(&adb, s, "persist.sys.timezone");
+        let encryption = prop(&adb, s, "ro.crypto.state");
+        let uptime = shell_str(&adb, s, &["cat", "/proc/uptime"])
+            .split_whitespace().next()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|secs| { let d = (secs / 86400.0) as u64; let h = ((secs % 86400.0) / 3600.0) as u64; let m = ((secs % 3600.0) / 60.0) as u64;
+                if d > 0 { format!("{d}d {h}h {m}m") } else { format!("{h}h {m}m") } })
+            .unwrap_or_default();
+
+        // Apps
+        let pm_list = shell_str(&adb, s, &["pm", "list", "packages"]);
+        let total_apps = pm_list.lines().count().to_string();
+        let user_apps = shell_str(&adb, s, &["pm", "list", "packages", "-3"]).lines().count().to_string();
+
+        // USB
+        let usb_state = shell_str(&adb, s, &["getprop", "sys.usb.state"]);
+        let adb_version = shell_str(&adb, s, &["version"])
+            .lines().next().unwrap_or("").to_string();
+
+        Ok(DeviceFullInfo {
+            manufacturer, brand, model, device_name, board, hardware, serial_no, bootloader, baseband,
+            android_version, sdk_level, security_patch, build_id, build_type, build_fingerprint, build_date,
+            cpu_abi, cpu_abi2, cpu_cores, cpu_max_freq,
+            resolution, density, refresh_rate,
+            total_ram, available_ram, internal_storage, sd_card,
+            battery_level, battery_status, battery_temp, battery_voltage, battery_health, battery_technology,
+            wifi_state, wifi_ssid: String::new(), ip_address, mac_address,
+            sim_operator, sim_carrier, sim_country, sim_state,
+            language, timezone, encryption, uptime,
+            total_apps, user_apps,
+            usb_state, adb_version,
+        })
+    })?
+}
+
 #[derive(Serialize)]
 struct ScreenshotResult {
     path: String,
@@ -532,6 +762,226 @@ fn device_screenshot(app: AppHandle, serial: String) -> Result<ScreenshotResult,
             path: path.display().to_string(),
             dark: bytes.len() < 60_000,
         })
+    })?
+}
+
+/// Play a ringtone on the connected device to physically locate it.
+#[tauri::command]
+async fn play_ringtone(serial: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::play_ringtone(&adb, &serial).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Start a looping ringtone that plays until explicitly stopped.
+#[tauri::command]
+async fn start_ringtone_loop(serial: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::start_ringtone_loop(&adb, &serial).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Stop the looping ringtone by creating a stop-flag on the device.
+#[tauri::command]
+async fn stop_ringtone(serial: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::stop_ringtone(&adb, &serial).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Lock down the device: hide navigation + status bars, block user interaction.
+/// General-purpose feature — usable during ringtone, extraction, etc.
+#[tauri::command]
+async fn lockdown_device(serial: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::lock_device(&adb, &serial);
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Release the device lockdown — restore navigation + status bars.
+#[tauri::command]
+async fn release_device(serial: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::unlock_device(&adb, &serial);
+        Ok(())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Stop device charging (freeze battery as unplugged).
+#[tauri::command]
+fn stop_charging(serial: String) -> Result<String, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::stop_charging(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Start/resume device charging (reset battery to hardware values).
+#[tauri::command]
+fn start_charging(serial: String) -> Result<String, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::start_charging(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Get current battery status from the device.
+#[tauri::command]
+fn get_battery_status(serial: String) -> Result<String, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::get_battery_status(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Collect WiFi network history from the device.
+#[tauri::command]
+fn collect_wifi(serial: String) -> Result<Vec<wifi_forensics::WifiNetwork>, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        wifi_forensics::collect_wifi_networks(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Collect Bluetooth paired devices from the device.
+#[tauri::command]
+fn collect_bluetooth(serial: String) -> Result<Vec<bluetooth_forensics::BluetoothDevice>, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        bluetooth_forensics::collect_bluetooth_devices(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Collect registered accounts from the device.
+#[tauri::command]
+fn collect_accounts(serial: String) -> Result<Vec<account_forensics::DeviceAccount>, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        account_forensics::collect_accounts(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Collect power/battery events from the device.
+#[tauri::command]
+fn collect_power_events(serial: String) -> Result<Vec<power_forensics::PowerEvent>, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        power_forensics::collect_power_events(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Collect notification log from the device.
+#[tauri::command]
+fn collect_notifications(serial: String) -> Result<Vec<clipboard_forensics::NotificationEntry>, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        clipboard_forensics::collect_notifications(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Collect user dictionary words from the device.
+#[tauri::command]
+fn collect_dictionary(serial: String) -> Result<Vec<keyboard_forensics::DictionaryWord>, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        keyboard_forensics::collect_dictionary(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn recover_deleted_sms(serial: String) -> Result<deleted_sms::DeletedSmsResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        deleted_sms::recover_deleted_sms(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn recover_thumbnails(serial: String) -> Result<thumbnail_recovery::ThumbnailRecoveryResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        thumbnail_recovery::recover_thumbnails(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn carve_device_db(serial: String, db_path: String, tables: Vec<String>) -> Result<db_carver::CarveResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        let table_refs: Vec<&str> = tables.iter().map(|s| s.as_str()).collect();
+        db_carver::pull_and_carve(&adb, &serial, &db_path, &table_refs).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn collect_browser_data(serial: String) -> Result<browser_forensics::BrowserForensicsResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        browser_forensics::collect_browser_data(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn collect_network_artifacts(serial: String) -> Result<network_forensics::NetworkForensicsResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        network_forensics::collect_network_artifacts(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn analyze_installed_apks(serial: String) -> Result<apk_analyzer::ApkAnalysisResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        apk_analyzer::analyze_apks(&adb, &serial, &[]).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn collect_location_data(serial: String) -> Result<location_forensics::LocationForensicsResult, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        location_forensics::collect_location_data(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+#[tauri::command]
+fn build_timeline(
+    calls: Vec<(i64, String, String)>,
+    sms: Vec<(i64, String, String, bool)>,
+    whatsapp: Vec<(i64, String, String, bool)>,
+    power: Vec<(i64, String, u8)>,
+    notifications: Vec<(i64, String, String)>,
+    browser: Vec<(i64, String, String)>,
+    location: Vec<(i64, f64, f64, String)>,
+    serial: Option<String>,
+) -> Result<Vec<unified_timeline::UnifiedEvent>, String> {
+    run_blocking(move || {
+        let input = unified_timeline::TimelineInput {
+            calls, sms, whatsapp, power_events: power, notifications,
+            browser_history: browser, location_events: location,
+            ..Default::default()
+        };
+        Ok(unified_timeline::build_unified_timeline(&input, serial.as_deref()))
+    })?
+}
+
+#[tauri::command]
+fn generate_report(
+    serial: String,
+    model: Option<String>,
+    sources: Vec<forensic_report::SourceReport>,
+    events: Vec<unified_timeline::UnifiedEvent>,
+) -> Result<String, String> {
+    run_blocking(move || {
+        let report = forensic_report::build_report(&serial, model.as_deref(), sources, &events);
+        Ok(forensic_report::generate_html_report(&report, &events))
     })?
 }
 
@@ -947,6 +1397,17 @@ async fn check_root(serial: String) -> Result<recovery_core::acquisition::RootCh
     tokio::task::spawn_blocking(move || -> Result<recovery_core::acquisition::RootCheckResult, String> {
         let adb = adb::AdbClient::default();
         Ok(recovery_core::acquisition::check_root_access(&adb, &serial))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// WhatsApp downgrade extraction - installs legacy WhatsApp, does ADB backup, extracts key + DB.
+#[tauri::command]
+async fn extract_whatsapp_downgrade(serial: String) -> Result<recovery_core::acquisition::WhatsAppDeepResult, String> {
+    tokio::task::spawn_blocking(move || -> Result<recovery_core::acquisition::WhatsAppDeepResult, String> {
+        let adb = adb::AdbClient::default();
+        recovery_core::acquisition::acquire_whatsapp_downgrade(&adb, &serial).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1763,6 +2224,60 @@ fn chrono_fmt(ms: i64) -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}")
 }
 
+#[tauri::command]
+async fn capture_device_photo(serial: String, app: AppHandle) -> Result<acquisition::CameraCaptureResult, String> {
+    let adb = adb::AdbClient::default();
+    let output_dir = PathBuf::from("D:\\RecoverKit_Temp\\camera");
+    
+    // Emit progress event
+    let _ = app.emit("capture-progress", serde_json::json!({
+        "type": "camera",
+        "status": "Opening camera app on device..."
+    }));
+    
+    // Run blocking operation in a separate thread
+    let result = tokio::task::spawn_blocking(move || {
+        acquisition::capture_device_photo(&adb, &serial, &output_dir)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    
+    Ok(result)
+}
+
+#[tauri::command]
+async fn capture_device_mic(serial: String, duration: u32, app: AppHandle) -> Result<acquisition::MicCaptureResult, String> {
+    let adb = adb::AdbClient::default();
+    let output_dir = PathBuf::from("D:\\RecoverKit_Temp\\mic");
+    
+    // Emit progress event
+    let _ = app.emit("capture-progress", serde_json::json!({
+        "type": "mic",
+        "status": format!("Recording {} seconds from device mic...", duration)
+    }));
+    
+    // Run blocking operation in a separate thread
+    let result = tokio::task::spawn_blocking(move || {
+        acquisition::capture_device_mic(&adb, &serial, &output_dir, duration)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    
+    Ok(result)
+}
+
+#[tauri::command]
+fn adb_shell_command(serial: String, command: String) -> Result<String, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        let result = adb.shell(&serial, &["sh", "-c", &command])
+            .map_err(|e| e.to_string())?;
+        Ok(String::from_utf8_lossy(&result).to_string())
+    })?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1783,7 +2298,16 @@ pub fn run() {
             media_dir,
             inspect_media,
             device_mirror,
+            device_full_info,
             device_screenshot,
+            play_ringtone,
+            start_ringtone_loop,
+            stop_ringtone,
+            lockdown_device,
+            release_device,
+            stop_charging,
+            start_charging,
+            get_battery_status,
             device_presence,
             list_apps,
             app_details,
@@ -1800,6 +2324,7 @@ pub fn run() {
             extract_telegram,
             extract_app_forensic,
             extract_whatsapp_deep,
+            extract_whatsapp_downgrade,
             check_root,
             poll_call_state,
             check_recent_calls,
@@ -1830,7 +2355,25 @@ pub fn run() {
             export_case,
             get_case_timeline,
             ingest_recovered_messages,
-            export_result
+            export_result,
+            collect_wifi,
+            collect_bluetooth,
+            collect_accounts,
+            collect_power_events,
+            collect_notifications,
+            collect_dictionary,
+            recover_deleted_sms,
+            recover_thumbnails,
+            carve_device_db,
+            collect_browser_data,
+            collect_network_artifacts,
+            analyze_installed_apks,
+            collect_location_data,
+            build_timeline,
+            generate_report,
+            capture_device_photo,
+            capture_device_mic,
+            adb_shell_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

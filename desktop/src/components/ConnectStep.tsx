@@ -1,22 +1,36 @@
+import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type {
-  Device, DirectAcquisition, WhatsAppDeepResult, RootCheckResult,
+  Device, DeviceMirror, DirectAcquisition, WhatsAppDeepResult, RootCheckResult,
   CallEvent, CallRecording, SimSnapshot, SimSwapVerdict, HistoricalSim, ScreenCapture,
 } from "../types";
 import { fmtSize } from "../types";
 import { ScreenMirrorPanel } from "./ScreenMirrorPanel";
+import { DesktopMicStream } from "./DesktopMicStream";
+import { OverviewTab } from "./OverviewTab";
+import { playDeviceRingtone as _playRingtone, startRingtoneLoop, stopRingtone, lockdownDevice, releaseDevice } from "../api";
 
 interface ConnectStepProps {
   serial: string;
   busy: boolean;
   devices: Device[];
-  connectTab: "data" | "whatsapp" | "calls" | "sim";
-  setConnectTab: (t: "data" | "whatsapp" | "calls" | "sim") => void;
+  connectTab: "overview" | "data" | "whatsapp" | "calls" | "sim";
+  setConnectTab: (t: "overview" | "data" | "whatsapp" | "calls" | "sim") => void;
   // System data
   directData: DirectAcquisition | null;
   directBusy: boolean;
   onAcquire: () => void;
   onViewFull: () => void;
+  // Camera
+  cameraBusy: boolean;
+  cameraStatus: string;
+  onCapturePhoto: () => void;
+  // Microphone
+  micBusy: boolean;
+  micStatus: string;
+  micDuration: number;
+  onMicDurationChange: (v: number) => void;
+  onCaptureMic: () => void;
   // WhatsApp
   waDeepResult: WhatsAppDeepResult | null;
   waDeepBusy: boolean;
@@ -24,6 +38,7 @@ interface ConnectStepProps {
   rootBusy: boolean;
   onWhatsappDeep: () => void;
   onCheckRoot: () => void;
+  onWhatsappDowngrade: () => void;
   onImportTxt: () => void;
   onProvideKey: () => void;
   // Call monitor
@@ -50,6 +65,7 @@ interface ConnectStepProps {
   onSimSwapCheck: () => void;
   onDeleteSimSnap: (id: number) => void;
   // Screen mirror
+  mirror: DeviceMirror | null;
   shot: string;
   shotTs: number;
   shotDark: boolean;
@@ -76,6 +92,10 @@ interface ConnectStepProps {
   onAutoRefreshChange: (v: boolean) => void;
   onStreamFpsChange: (v: number) => void;
   onStreamModeChange: (v: string) => void;
+  onRingDevice: () => void;
+  onLockDevice: () => void;
+  onToggleCharging: () => void;
+  chargingStopped: boolean;
   // Navigation
   onGoTo: (step: "scan") => void;
 }
@@ -83,8 +103,9 @@ interface ConnectStepProps {
 export function ConnectStep(props: ConnectStepProps) {
   const {
     serial, busy, devices, connectTab, setConnectTab,
-    directData, directBusy, onAcquire, onViewFull,
-    waDeepResult, waDeepBusy, rootCheck, rootBusy, onWhatsappDeep, onCheckRoot, onImportTxt, onProvideKey,
+    mirror, directData, directBusy, onAcquire, onViewFull,
+    cameraBusy, cameraStatus, onCapturePhoto,
+    waDeepResult, waDeepBusy, rootCheck, rootBusy, onWhatsappDeep, onCheckRoot, onWhatsappDowngrade, onImportTxt, onProvideKey,
     callMonitorActive, callEvents, currentCallNotification, callRecordings, playingRec, timeline,
     onStartMonitor, onStopMonitor, onLoadRecordings, onPlayRecording, onStopPlaying,
     simSnapshot, simBaseline, simHistorical, simVerdict, simHistory, simBusy,
@@ -93,8 +114,25 @@ export function ConnectStep(props: ConnectStepProps) {
     autoRefresh, captures, captureBusy, autoCaptureActive, captureInterval,
     onCapture, onStartStream, onStopStream, onTakeScreenshot, onStartAuto, onStopAuto,
     onIntervalChange, onRefreshCaptures, onDeleteCapture, onAutoRefreshChange, onStreamFpsChange, onStreamModeChange,
+    onRingDevice, onLockDevice, onToggleCharging, chargingStopped,
     onGoTo,
   } = props;
+
+  const [locked, setLocked] = useState(false);
+  const [ringing, setRinging] = useState(false);
+
+  const handleLockdown = async () => {
+    if (!serial) return;
+    try {
+      if (locked) {
+        await releaseDevice(serial);
+        setLocked(false);
+      } else {
+        await lockdownDevice(serial);
+        setLocked(true);
+      }
+    } catch {}
+  };
 
   return (
     <section className="workbench wb-connect">
@@ -107,15 +145,37 @@ export function ConnectStep(props: ConnectStepProps) {
               : `${devices.length} device${devices.length === 1 ? "" : "s"} · ${serial || "none selected"} · read-only`}
           </span>
           {devices.some((d) => d.serial === serial && d.state === "device") && (
-            <button className="primary next" onClick={() => onGoTo("scan")}>
-              Continue to Scan →
-            </button>
+            <>
+              <button className="primary next" onClick={() => onGoTo("scan")}>
+                Continue to Scan →
+              </button>
+              <div className="quick-actions-inline">
+                <button className="qa-btn" onClick={onViewFull} title="View Full Details">
+                   Full Details
+                </button>
+                <button className="qa-btn primary" onClick={onAcquire} disabled={directBusy} title="Acquire Data">
+                   Acquire Data
+                </button>
+                <button className="qa-btn" onClick={onLockDevice} title="Lock Device">
+                   Lock
+                </button>
+                <button className="qa-btn" onClick={onRingDevice} title="Ring Device">
+                   Ring
+                </button>
+                <button className={`qa-btn ${chargingStopped ? "warning" : ""}`} onClick={onToggleCharging} title={chargingStopped ? "Resume Charging" : "Stop Charging"}>
+                  {chargingStopped ? "" : ""} {chargingStopped ? "Start Charge" : "Stop Charge"}
+                </button>
+              </div>
+            </>
           )}
         </div>
       </div>
 
       {/* TAB BAR */}
       <div className="wb-connect-tabs">
+        <button className={connectTab === "overview" ? "active" : ""} onClick={() => setConnectTab("overview")}>
+          📋 Overview
+        </button>
         <button className={connectTab === "data" ? "active" : ""} onClick={() => setConnectTab("data")}>
           📞 System Data
           {directData && <span className="tab-badge">{directData.call_logs.length + directData.sms_messages.length + directData.contacts.length}</span>}
@@ -134,18 +194,91 @@ export function ConnectStep(props: ConnectStepProps) {
         </button>
       </div>
 
+      {/* Overview Tab */}
+      {connectTab === "overview" && (
+        <OverviewTab
+          serial={serial}
+          mirror={mirror}
+          directData={directData}
+        />
+      )}
+
       {/* System data acquisition */}
       {connectTab === "data" && (
         <div className="panel" style={{ gridArea: "left" }}>
           <div className="panel-bar">📞 System Data</div>
           <div className="panel-body">
-            <button className="primary" disabled={!serial || directBusy || busy} onClick={onAcquire}>
-              {directBusy ? "Acquiring…" : "📥 Acquire Call Logs, SMS & Contacts"}
-            </button>
-            <p className="hint small">
-              Reads call logs, SMS/MMS, and contacts directly from Android content providers.
-              No root required.
-            </p>
+            {/* Quick Actions Grid */}
+            <div className="quick-actions-grid">
+              <button
+                className="quick-action primary"
+                disabled={!serial || directBusy || busy}
+                onClick={onAcquire}
+              >
+                <span className="qa-icon">📥</span>
+                <span className="qa-label">{directBusy ? "Acquiring…" : "Acquire Data"}</span>
+                <span className="qa-hint">Call logs, SMS, contacts</span>
+              </button>
+              <button
+                className="quick-action"
+                disabled={!serial || busy || cameraBusy}
+                onClick={onCapturePhoto}
+                style={{ background: cameraBusy ? "#f8e8e8" : "#fff5f5", borderColor: cameraBusy ? "#e88" : "#f5c6c6" }}
+              >
+                <span className="qa-icon">📸</span>
+                <span className="qa-label">{cameraBusy ? "Capturing…" : "Camera"}</span>
+                <span className="qa-hint">Take photo via device</span>
+              </button>
+              <button
+                className="quick-action"
+                disabled={!serial || busy}
+                onClick={async () => {
+                  try {
+                    if (ringing) {
+                      await stopRingtone(serial);
+                      setRinging(false);
+                    } else {
+                      await startRingtoneLoop(serial);
+                      setRinging(true);
+                    }
+                  } catch {}
+                }}
+                style={{ background: ringing ? "#fde8e8" : "#fff8f0", borderColor: ringing ? "#e88" : "#f0d4a8" }}
+              >
+                <span className="qa-icon">{ringing ? "\u23F9" : "\uD83D\uDD14"}</span>
+                <span className="qa-label">{ringing ? "Stop Ringing" : "Ring Phone"}</span>
+                <span className="qa-hint">{ringing ? "Tap to stop" : "Loop until stopped"}</span>
+              </button>
+              <button
+                className="quick-action"
+                disabled={!serial || busy}
+                onClick={handleLockdown}
+                style={{ background: locked ? "#fde8e8" : "#f0f0ff", borderColor: locked ? "#e88" : "#c6c6f5" }}
+              >
+                <span className="qa-icon">{locked ? "\uD83D\uDD13" : "\uD83D\uDD12"}</span>
+                <span className="qa-label">{locked ? "Unlock Device" : "Lock Device"}</span>
+                <span className="qa-hint">{locked ? "Nav + status bars restored" : "Block nav/status bars"}</span>
+              </button>
+              <button
+                className="quick-action"
+                disabled={!directData}
+                onClick={onViewFull}
+                style={{ background: "#f0faf2", borderColor: "#b8e0c0" }}
+              >
+                <span className="qa-icon">🔍</span>
+                <span className="qa-label">View All Data</span>
+                <span className="qa-hint">{directData ? `${directData.call_logs.length + directData.sms_messages.length + directData.contacts.length} items` : "Acquire first"}</span>
+              </button>
+            </div>
+
+            {/* Status feedback */}
+            {cameraStatus && (
+              <p className="hint small" style={{ marginTop: 6, textAlign: "center", color: cameraStatus.startsWith("📸") ? "#2ecc71" : cameraStatus.startsWith("❌") ? "#e74c3c" : "#888" }}>
+                {cameraStatus}
+              </p>
+            )}
+
+            {/* Acquired data summary */}
             {directData && (
               <>
                 <hr className="pdiv" />
@@ -153,25 +286,22 @@ export function ConnectStep(props: ConnectStepProps) {
                   <span className="pill ok">{directData.call_logs.length} calls</span>
                   <span className="pill ok">{directData.sms_messages.length} SMS</span>
                   <span className="pill ok">{directData.contacts.length} contacts</span>
-                  <span className="pill ok">{directData.call_recordings.length} recordings</span>
-                  <span className="pill ok">{directData.whatsapp_media.length} WA media</span>
-                  <span className="pill ok">{directData.calendar_events.length} calendar</span>
+                  <span className="pill ok">{directData.call_recordings.length} rec</span>
+                  <span className="pill ok">{directData.whatsapp_media.length} WA</span>
                 </div>
                 {directData.notes.length > 0 && (
-                  <div className="hint" style={{ marginTop: 8 }}>
+                  <div className="hint" style={{ marginTop: 4 }}>
                     {directData.notes.map((n, i) => (
                       <p key={i} className="err">⚠ {n}</p>
                     ))}
                   </div>
                 )}
-                <button className="primary" style={{ marginTop: 12, width: "100%" }} onClick={onViewFull}>
-                  🔍 View All Data
-                </button>
-                <p className="hint small" style={{ marginTop: 8, textAlign: "center" }}>
-                  ✓ Data acquired — continue to <button className="mini" style={{ padding: "1px 6px", fontSize: 10 }} onClick={() => onGoTo("scan")}>② Scan →</button>
-                </p>
               </>
             )}
+
+            {/* Desktop Mic — compact */}
+            <hr className="pdiv" />
+            <DesktopMicStream onStatus={() => {}} />
           </div>
         </div>
       )}
@@ -189,6 +319,15 @@ export function ConnectStep(props: ConnectStepProps) {
                 {rootBusy ? "…" : "🔍 Root"}
               </button>
             </div>
+            <button
+              className="mini"
+              disabled={!serial || waDeepBusy || busy}
+              onClick={onWhatsappDowngrade}
+              title="Downgrade WhatsApp to extract key + database (requires LegacyWhatsApp.apk)"
+              style={{ width: "100%", marginBottom: 8, background: "rgba(0,120,255,0.08)", border: "1px solid rgba(0,120,255,0.2)" }}
+            >
+              ⬇️ Advanced: Downgrade & Extract (No Root)
+            </button>
 
             {rootCheck && (
               <div style={{ marginBottom: 12, padding: 8, background: rootCheck.has_root ? "rgba(0,200,100,0.1)" : "rgba(255,100,0,0.1)", borderRadius: 6 }}>
@@ -208,14 +347,9 @@ export function ConnectStep(props: ConnectStepProps) {
                 )}
                 {!rootCheck.has_root && (
                   <div style={{ marginTop: 10, padding: 8, background: "rgba(255,200,0,0.1)", borderRadius: 4, fontSize: 12 }}>
-                    <strong>⚠️ Root Required for Full Extraction</strong>
-                    <p style={{ margin: "6px 0 4px" }}>The WhatsApp encryption key is protected. Options:</p>
-                    <ol style={{ margin: 0, paddingLeft: 18, lineHeight: 1.6 }}>
-                      <li><strong>Root device</strong> — Install Magisk (unlock bootloader → flash Magisk)</li>
-                      <li><strong>Export chats</strong> — In WhatsApp: Chat → ⋮ → More → Export chat → import .txt here</li>
-                      <li><strong>Use rooted device</strong> — Login WhatsApp on a rooted phone, extract key</li>
-                    </ol>
-                    <button className="mini" style={{ marginTop: 8 }} onClick={onImportTxt}>
+                    <strong>⚠️ No root access</strong>
+                    <p style={{ margin: "6px 0 4px" }}>Tried all automatic methods. If you have the key file, provide it below:</p>
+                    <button className="mini" style={{ marginTop: 4 }} onClick={onImportTxt}>
                       📄 Import Chat Export (.txt)
                     </button>
                   </div>
@@ -232,7 +366,8 @@ export function ConnectStep(props: ConnectStepProps) {
             )}
 
             <p className="hint small">
-              Auto-extracts: key → decrypt → parse → chats. Root needed for full access.
+              Auto-extracts: run-as → root → local key → pull → ADB backup → decrypt → parse → chats.
+              Downgrade method: legacy WA → backup → key+DB → restore (Android 4–13).
             </p>
             {waDeepResult && (
               <>
@@ -282,9 +417,9 @@ export function ConnectStep(props: ConnectStepProps) {
                 {waDeepResult.chats.length > 0 && (
                   <div style={{ marginTop: 12 }}>
                     <p style={{ fontWeight: 500, marginBottom: 8 }}>Extracted Chats:</p>
-                    <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, padding: 8 }}>
+                    <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 6, padding: 8 }}>
                       {waDeepResult.chats.slice(0, 20).map((chat, i) => (
-                        <div key={i} style={{ padding: "4px 0", borderBottom: i < 19 ? "1px solid var(--border)" : "none" }}>
+                        <div key={i} style={{ padding: "4px 0", borderBottom: i < 19 ? "1px solid var(--line)" : "none" }}>
                           <strong>{chat.name || chat.jid}</strong>
                           <span style={{ marginLeft: 8, color: "var(--muted)" }}>
                             {chat.message_count} msgs

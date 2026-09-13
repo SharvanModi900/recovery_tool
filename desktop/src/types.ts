@@ -8,6 +8,69 @@ export interface Device {
   android_version: string | null;
 }
 
+export interface DeviceFullInfo {
+  // Identity
+  manufacturer: string;
+  brand: string;
+  model: string;
+  device_name: string;
+  board: string;
+  hardware: string;
+  serial_no: string;
+  bootloader: string;
+  baseband: string;
+  // OS
+  android_version: string;
+  sdk_level: string;
+  security_patch: string;
+  build_id: string;
+  build_type: string;
+  build_fingerprint: string;
+  build_date: string;
+  // CPU
+  cpu_abi: string;
+  cpu_abi2: string;
+  cpu_cores: string;
+  cpu_max_freq: string;
+  // Display
+  resolution: string;
+  density: string;
+  refresh_rate: string;
+  // Memory & Storage
+  total_ram: string;
+  available_ram: string;
+  internal_storage: string;
+  sd_card: string;
+  // Battery
+  battery_level: string;
+  battery_status: string;
+  battery_temp: string;
+  battery_voltage: string;
+  battery_health: string;
+  battery_technology: string;
+  // Network
+  wifi_state: string;
+  wifi_ssid: string;
+  ip_address: string;
+  mac_address: string;
+  // SIM
+  sim_operator: string;
+  sim_carrier: string;
+  sim_country: string;
+  sim_state: string;
+  // System
+  language: string;
+  timezone: string;
+  encryption: string;
+  uptime: string;
+  // Apps
+  total_apps: string;
+  user_apps: string;
+  // USB
+  usb_state: string;
+  adb_version: string;
+}
+
 export type ArtifactKind = "database" | "backup" | "media" | "other";
 
 export interface Artifact {
@@ -218,6 +281,17 @@ export interface WhatsAppDeepResult {
   total_messages: number;
   total_contacts: number;
   notes: string[];
+  // Extended forensic artifacts
+  wa_db_path: string | null;
+  axolotl_db_path: string | null;
+  chatsettings_db_path: string | null;
+  profile_phone: string | null;
+  profile_display_name: string | null;
+  profile_about: string | null;
+  log_files: string[];
+  media_extracted: number;
+  trash_files_recovered: number;
+  second_space_detected: boolean;
 }
 
 /** Root access check result. */
@@ -517,6 +591,264 @@ export interface TimelinePage {
   total: number;
   kinds: KindCount[];
   returned: number;
+}
+
+// ── Deep Forensic Types ──
+
+export interface WifiNetwork {
+  ssid: string;
+  bssid: string | null;
+  security: string;
+  freq_mhz: number | null;
+  is_saved: boolean;
+  last_connected: number | null;
+  network_id: number | null;
+}
+
+export interface BluetoothDevice {
+  name: string;
+  mac_address: string;
+  device_type: string;
+  bond_state: string;
+  alias: string | null;
+}
+
+export interface DeviceAccount {
+  account_type: string;
+  account_name: string;
+  authority_count: number;
+}
+
+export interface PowerEvent {
+  timestamp_ms: number;
+  event_type: string;
+  battery_level: number;
+  detail: string | null;
+}
+
+export interface NotificationEntry {
+  package: string;
+  title: string | null;
+  text: string | null;
+  timestamp: number | null;
+  channel: string | null;
+}
+
+export interface DictionaryWord {
+  word: string;
+  frequency: number;
+  locale: string | null;
+  app_id: string | null;
+}
+
+// ── Phase 2: Deleted Data Recovery ──
+
+export interface SmsRecord {
+  id: number | null;
+  address: string | null;
+  body: string | null;
+  msg_type: number | null;
+  timestamp: number | null;
+  read: boolean | null;
+  source: string;
+  is_deleted: boolean;
+}
+
+export interface DeletedSmsResult {
+  live_count: number;
+  deleted_count: number;
+  records: SmsRecord[];
+  sha256: string;
+  notes: string[];
+}
+
+export interface ThumbnailEntry {
+  path: string;
+  original_path: string | null;
+  file_size: number;
+  width: number | null;
+  height: number | null;
+  timestamp: number | null;
+}
+
+export interface ThumbnailRecoveryResult {
+  thumbnails: ThumbnailEntry[];
+  total_count: number;
+  total_size: number;
+  notes: string[];
+}
+
+export interface CarvedRecord {
+  table: string;
+  row_data: Record<string, string>;
+  source: string;
+  confidence: string;
+}
+
+export interface CarveResult {
+  db_path: string;
+  tables: string[];
+  live_records: CarvedRecord[];
+  carved_records: CarvedRecord[];
+  sha256: string;
+  notes: string[];
+}
+
+// ── Phase 3: Browser Forensics ──
+
+export interface BrowserHistoryEntry {
+  url: string;
+  title: string | null;
+  visit_count: number;
+  last_visit: number | null;
+  typed_count: number;
+}
+
+export interface BookmarkEntry {
+  url: string;
+  title: string | null;
+  folder: string | null;
+  created: number | null;
+}
+
+export interface DownloadEntry {
+  url: string;
+  filename: string | null;
+  total_bytes: number;
+  received_bytes: number;
+  start_time: number | null;
+}
+
+export interface CookieEntry {
+  host_key: string;
+  name: string;
+  path: string;
+  is_secure: boolean;
+  is_httponly: boolean;
+  expires_utc: number | null;
+  last_access: number | null;
+}
+
+export interface BrowserForensicsResult {
+  history: BrowserHistoryEntry[];
+  bookmarks: BookmarkEntry[];
+  downloads: DownloadEntry[];
+  cookies: CookieEntry[];
+  sha256: string;
+  notes: string[];
+}
+
+// ── Phase 4: Location & Network ──
+
+export interface LocationPoint {
+  timestamp: number | null;
+  latitude: number;
+  longitude: number;
+  accuracy_m: number | null;
+  source: string;
+  address_hint: string | null;
+}
+
+export interface LocationForensicsResult {
+  points: LocationPoint[];
+  notes: string[];
+}
+
+export interface TcpConnection {
+  local_addr: string;
+  local_port: number;
+  remote_addr: string;
+  remote_port: number;
+  state: string;
+}
+
+export interface ArpEntry {
+  ip: string;
+  mac: string;
+  device: string;
+  state: string;
+}
+
+export interface DnsCacheEntry {
+  domain: string;
+  resolved_ip: string;
+  ttl: number | null;
+}
+
+export interface NetworkForensicsResult {
+  tcp_connections: TcpConnection[];
+  arp_entries: ArpEntry[];
+  dns_cache: DnsCacheEntry[];
+  notes: string[];
+}
+
+export interface ApkAnalysis {
+  package: string;
+  apk_path: string;
+  sha256: string;
+  signer_cn: string | null;
+  signer_fingerprint: string | null;
+  install_time: number | null;
+  last_update: number | null;
+  is_system: boolean;
+  forensic_flags: string[];
+}
+
+export interface ApkAnalysisResult {
+  apps: ApkAnalysis[];
+  notes: string[];
+}
+
+export interface ExifData {
+  camera_make: string | null;
+  camera_model: string | null;
+  timestamp_original: string | null;
+  gps_lat: number | null;
+  gps_lon: number | null;
+  software: string | null;
+  orientation: number | null;
+  image_width: number | null;
+  image_height: number | null;
+}
+
+// ── Phase 5: Unified Timeline & Report ──
+
+export interface UnifiedEvent {
+  timestamp: number;
+  category: string;
+  title: string;
+  detail: string | null;
+  source_app: string | null;
+  device_serial: string | null;
+  is_deleted: boolean;
+}
+
+export interface SourceReport {
+  name: string;
+  record_count: number;
+  deleted_count: number;
+  sha256: string | null;
+  notes: string[];
+}
+
+export interface CameraCaptureResult {
+  success: boolean;
+  photo_path: string | null;
+  local_path: string | null;
+  filename: string | null;
+  size: number;
+  timestamp: number;
+  notes: string[];
+}
+
+export interface MicCaptureResult {
+  success: boolean;
+  audio_path: string | null;
+  local_path: string | null;
+  filename: string | null;
+  size: number;
+  duration: number;
+  notes: string[];
 }
 
 export function fmtSize(bytes: number): string {

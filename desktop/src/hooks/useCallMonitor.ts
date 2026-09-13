@@ -138,7 +138,7 @@ export function useCallMonitor({ serial, setStatus, setError }: UseCallMonitorAr
       } catch (e) {
         // Silently ignore transient errors during monitoring.
       }
-    }, 2000);
+    }, 8000); // Changed from 2000ms to 8000ms to reduce ADB spam
   }, [serial, loadCallRecordings, playBellSound]);
 
   const stopCallMonitor = useCallback(() => {

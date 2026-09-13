@@ -14,6 +14,11 @@
 pub mod instagram;
 pub mod messenger;
 pub mod telegram;
+pub mod snapchat;
+pub mod signal;
+pub mod viber;
+pub mod line;
+pub mod wechat;
 pub mod extraction;
 
 use serde::{Deserialize, Serialize};
@@ -184,6 +189,87 @@ pub const SUPPORTED_APPS: &[AppDefinition] = &[
         ],
         databases: &[
             "EnMicroMsg.db",
+        ],
+    },
+    // --- Non-messaging apps ---
+    AppDefinition {
+        id: "skype",
+        name: "Skype",
+        package: "com.skype.raider",
+        icon: "🔵",
+        requires_root: false,
+        accessible_paths: &[
+            "/sdcard/Android/data/com.skype.raider",
+        ],
+        root_paths: &[
+            "/data/data/com.skype.raider/databases",
+        ],
+        databases: &[
+            "main.db",
+        ],
+    },
+    AppDefinition {
+        id: "discord",
+        name: "Discord",
+        package: "com.discord",
+        icon: "🎮",
+        requires_root: false,
+        accessible_paths: &[
+            "/sdcard/Android/data/com.discord",
+        ],
+        root_paths: &[
+            "/data/data/com.discord/databases",
+        ],
+        databases: &[
+            "discord.db",
+        ],
+    },
+    AppDefinition {
+        id: "twitter",
+        name: "X (Twitter)",
+        package: "com.twitter.android",
+        icon: "🐦",
+        requires_root: false,
+        accessible_paths: &[
+            "/sdcard/Android/data/com.twitter.android",
+        ],
+        root_paths: &[
+            "/data/data/com.twitter.android/databases",
+        ],
+        databases: &[
+            "twitter.db",
+        ],
+    },
+    AppDefinition {
+        id: "tiktok",
+        name: "TikTok",
+        package: "com.zhiliaoapp.musically",
+        icon: "🎵",
+        requires_root: false,
+        accessible_paths: &[
+            "/sdcard/Android/data/com.zhiliaoapp.musically",
+        ],
+        root_paths: &[
+            "/data/data/com.zhiliaoapp.musically/databases",
+        ],
+        databases: &[
+            "aweme.db",
+        ],
+    },
+    AppDefinition {
+        id: "threema",
+        name: "Threema",
+        package: "ch.threema.app",
+        icon: "🟩",
+        requires_root: true,
+        accessible_paths: &[
+            "/sdcard/Threema",
+        ],
+        root_paths: &[
+            "/data/data/ch.threema.app/databases",
+        ],
+        databases: &[
+            "threema.db",
         ],
     },
 ];
