@@ -3,9 +3,9 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult } from "./types";
+import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult, InstagramData, MessengerData, TelegramData, ForensicExtraction } from "./types";
 import { fmtSize } from "./types";
-import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, CallNotificationPanel, DeepForensicsStep, DeletedDataStep, BrowserForensicsStep, NetworkLocationStep, DebugConsole, DeviceDetailsPanel, StandaloneTimeline } from "./components";
+import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, DeepForensicsStep, MessagesStep, CallsStep, ContactsStep, SimForensicsStep, ArtifactsStep, DeletedDataStep, BrowserForensicsStep, NetworkLocationStep, DebugConsole, DeviceDetailsPanel, StandaloneTimeline, OverviewTab, ScreenMirrorPanel, ToolsPanel, DeletedPhotoGallery } from "./components";
 import { useDeviceMirror } from "./hooks/useDeviceMirror";
 import { useCallMonitor } from "./hooks/useCallMonitor";
 import { useSimForensics } from "./hooks/useSimForensics";
@@ -103,40 +103,14 @@ const createEmptySession = (serial: string, model: string = ""): DeviceSession =
   exportBusy: false,
 });
 
-type Step = "connect" | "apps" | "scan" | "media" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
-
-const STEPS: { id: Step; label: string; icon: string }[] = [
-  { id: "connect", label: "Connect", icon: "📱" },
-  { id: "apps", label: "Apps", icon: "📦" },
-  { id: "scan", label: "Scan", icon: "🔎" },
-  { id: "media", label: "Media", icon: "🖼" },
-  { id: "deep", label: "Forensics", icon: "🔬" },
-  { id: "timeline", label: "Timeline", icon: "🕐" },
-  { id: "recover", label: "Recover", icon: "⚙" },
-  { id: "export", label: "Export", icon: "📤" },
-  { id: "case", label: "Case", icon: "🗂" },
-];
-
-// Workflow phases — groups related steps for visual navigation
-const PHASES: { label: string; icon: string; steps: Step[] }[] = [
-  { label: "Collect", icon: "📥", steps: ["connect", "apps", "scan", "media"] },
-  { label: "Analyze", icon: "🔬", steps: ["deep", "timeline", "recover"] },
-  { label: "Report", icon: "📊", steps: ["export", "case"] },
-];
-
-// Sub-steps hidden from sidebar but still accessible
-const FORENSICS_SUB: { id: Step; label: string; icon: string }[] = [
-  { id: "deep", label: "Deep Scan", icon: "🔍" },
-  { id: "deleted", label: "Deleted Data", icon: "🗑" },
-  { id: "browser", label: "Browser", icon: "🌐" },
-  { id: "network", label: "Network", icon: "📍" },
-];
+type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
 
 export default function App() {
   const [step, setStep] = useState<Step>("connect");
   const [debugOpen, setDebugOpen] = useState(false);
-  const [infoBarOpen, setInfoBarOpen] = useState(false);
   const [deviceDetailsOpen, setDeviceDetailsOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
 
   // Multi-device session management
   const [sessions, setSessions] = useState<Map<string, DeviceSession>>(new Map());
@@ -236,6 +210,10 @@ export default function App() {
   const [appInventory, setAppInventory] = useState<AppInventory | null>(null);
   const [appInventoryBusy, setAppInventoryBusy] = useState(false);
 
+  // Per-app extraction results
+  const [appExtractResults, setAppExtractResults] = useState<Map<string, InstagramData | MessengerData | TelegramData | ForensicExtraction>>(new Map());
+  const [appExtractBusy, setAppExtractBusy] = useState(false);
+
   // Direct acquisition (call logs, SMS, contacts)
   const [directData, setDirectData] = useState<DirectAcquisition | null>(null);
   const [directBusy, setDirectBusy] = useState(false);
@@ -270,14 +248,17 @@ export default function App() {
   const {
     mirror, shot, shotTs, shotDark, mirrorErr,
     autoRefresh, setAutoRefresh,
+    controlMode, setControlMode,
     mirrorBusy, liveStream, streamFps, setStreamFps, streamMode, setStreamMode, isVideoFrame,
+    paused, setPaused,
+    headlessActive, headlessBusy, toggleHeadless,
     loadMirror, capture, startStream, stopStream, resetMirror,
     captures, autoCaptureActive, captureBusy, captureInterval, setCaptureInterval,
     loadCaptures, takeScreenshot, startAutoCaptureHandler, stopAutoCaptureHandler, deleteCapture,
   } = useDeviceMirror({ serial, step, setStatus, setError });
 
   const {
-    callMonitorActive, callEvents, setCallEvents, currentCallNotification,
+    callMonitorActive, callEvents, currentCallNotification,
     callRecordings, playingRec, timeline,
     startCallMonitor, stopCallMonitor, loadCallRecordings,
     playRecording, setPlayingRec, playBellSound,
@@ -296,32 +277,6 @@ export default function App() {
     handleExportCase, handleCloseCase, handleDeleteCase,
     setCaseForm, setCaseEvidenceFilter, loadCases,
   } = useCaseManagement({ serial, deviceModel: activeSession?.model, step, setStep, setStatus, setError });
-
-  // ── Step completion tracking (drives nav badges + progress bar) ────────
-  const stepDone = useMemo(() => ({
-    connect: !!serial && directData != null,
-    apps: appInventory != null,
-    scan: report != null,
-    media: liveMedia != null || captures.length > 0,
-    deep: false,
-    deleted: false,
-    browser: false,
-    network: false,
-    recover: result != null,
-    export: !!exportedPath,
-    case: caseSummary != null,
-    timeline: false,
-  }), [serial, directData, appInventory, report, liveMedia, captures.length, result, exportedPath, caseSummary]);
-
-  const phaseDone = useMemo(() =>
-    Object.fromEntries(PHASES.map(p => [p.label, p.steps.every(s => stepDone[s])])),
-    [stepDone]
-  );
-
-  const progress = useMemo(() => {
-    const done = Object.values(stepDone).filter(Boolean).length;
-    return { done, total: STEPS.length, pct: Math.round((done / STEPS.length) * 100) };
-  }, [stepDone]);
 
   const run = useCallback(
     async <T,>(fn: () => Promise<T>, ok?: string): Promise<T | undefined> => {
@@ -409,49 +364,112 @@ export default function App() {
     }, deep ? "Deep recovery finished (live + carved records)" : "Live parse finished");
 
   /**
-   * One-click WhatsApp evidence read: scan → pull → decrypt (when a key is
-   * available) → deep-parse, with a live stage indicator. Everything goes
-   * through the same read-only pipeline as the manual steps.
+   * One-click WhatsApp evidence read.
+   * Checks for local crypt files first, tries quick key extraction, decrypts, parses.
    */
   const readWhatsApp = () =>
     run(async () => {
       setError("");
       setDecryptNote("");
-      setWaStage("Scanning WhatsApp storage on the phone…");
-      const [rep, pulled] = await api.scanDevice(serial, true, false);
-      setReport(rep);
-      if (!rep.artifacts.some((a) => a.kind === "database" || a.kind === "backup")) {
-        throw new Error(
-          "No WhatsApp databases/backups are accessible over USB. Live chat data sits in the app's private folder, which Android exposes only to rooted devices."
-        );
+
+      // ── Step 1: Find the encrypted/plain database ──
+      // Check local evidence folders first before scanning the device
+      setWaStage("Looking for WhatsApp database…");
+      let localCrypt = "";
+
+      // Check known local directories for crypt files
+      const localDirs = [
+        "D:\\recovery-tool\\evidence",
+        "D:\\RecoverKit_Temp",
+      ];
+      for (const d of localDirs) {
+        try {
+          const stat = await api.scanFolder(d);
+          const found = stat.artifacts?.find(a =>
+            (a.kind === "backup" || a.kind === "database") && /\.crypt\d+$/i.test(a.path)
+          );
+          if (found) {
+            localCrypt = found.path;
+            break;
+          }
+        } catch { /* not found, continue */ }
       }
-      const db = pulled.find((p) => /msgstore\.db$/i.test(p)) ?? "";
+
+      // If no local crypt found, scan the device
+      let db = "";
+      let crypt = localCrypt;
+      if (!crypt) {
+        setWaStage("No local database found — scanning phone…");
+        const [rep, pulled] = await api.scanDevice(serial, true, false);
+        setReport(rep);
+        db = pulled.find((p) => /msgstore\.db$/i.test(p)) ?? "";
+        crypt =
+          pulled.find((p) => /\.crypt\d+$/i.test(p) && !p.includes("increment")) ??
+          pulled.find((p) => /\.crypt\d+$/i.test(p)) ??
+          "";
+      }
       if (db) setDbPath(db);
-      const crypt =
-        pulled.find((p) => /\.crypt\d+$/i.test(p) && !p.includes("increment")) ??
-        pulled.find((p) => /\.crypt\d+$/i.test(p)) ??
-        "";
       if (crypt) setCryptPath(crypt);
 
+      // ── Step 2: If we have a plain DB, parse it directly ──
       let finalDb = db;
+
+      // ── Step 3: If we have a crypt file, try to get the key and decrypt ──
       if (!finalDb && crypt) {
-        if (!keyPath) {
-          throw new Error(
-            "Only an encrypted backup (.crypt) is accessible and no key file is loaded. Provide the keyfile in ③ Recover, or import a .txt chat export."
+        if (keyPath) {
+          // Key already loaded — decrypt directly
+          setWaStage("Decrypting the encrypted backup…");
+          const out = await api.decryptBackup(crypt, keyPath, undefined, serial || undefined);
+          setDbPath(out.output);
+          setDecryptNote(
+            out.format === "plain"
+              ? "Input was already a plain SQLite database."
+              : `Decrypted ${out.format} · key@${out.key_offset} iv@${out.iv_offset} · ${fmtSize(out.plaintext_size)}`
           );
+          finalDb = out.output;
+        } else {
+          // No key loaded — try quick extraction methods (run-as, root, accessible paths, local files)
+          setWaStage("Trying to extract WhatsApp key from device…");
+          try {
+            const deepResult = await api.extractWhatsappDeep(serial);
+            setWaDeepResult(deepResult);
+            if (deepResult.database_decrypted && deepResult.decrypted_db_path) {
+              setWaStage("WhatsApp key extracted — database decrypted!");
+              setDecryptNote(`Auto-extracted key via ${deepResult.key_method ?? "unknown"} — ${deepResult.total_messages} messages recovered`);
+              finalDb = deepResult.decrypted_db_path;
+            } else if (deepResult.key_obtained) {
+              const extractedKeyPath = "D:\\RecoverKit_Temp\\whatsapp.key";
+              setKeyPath(extractedKeyPath);
+              setWaStage("Decrypting the encrypted backup…");
+              const out = await api.decryptBackup(crypt, extractedKeyPath, undefined, serial || undefined);
+              setDbPath(out.output);
+              setDecryptNote(
+                out.format === "plain"
+                  ? "Input was already a plain SQLite database."
+                  : `Decrypted ${out.format} · key@${out.key_offset} iv@${out.iv_offset} · ${fmtSize(out.plaintext_size)}`
+              );
+              finalDb = out.output;
+            } else {
+              throw new Error(
+                "The encrypted database (crypt14) requires WhatsApp's 158-byte encryption key to decrypt. " +
+                "This key is stored inside Android's protected app sandbox and cannot be accessed on a non-rooted device.\n\n" +
+                "To proceed, you need ONE of:\n" +
+                "• A rooted phone — use 📥 Fetch key in ③ Recover\n" +
+                "• A previously extracted key file — use 🗝 Browse key in ③ Recover\n" +
+                "• A WhatsApp chat export (.txt) — use 📄 Import in ③ Recover"
+              );
+            }
+          } catch (deepErr: any) {
+            if (deepErr?.message?.includes("requires WhatsApp")) throw deepErr;
+            throw new Error(
+              "Only an encrypted backup (.crypt) is accessible and no key file is loaded. " +
+              "Provide the keyfile in ③ Recover, or import a .txt chat export."
+            );
+          }
         }
-        setWaStage("Decrypting the encrypted backup…");
-        const out = await api.decryptBackup(crypt, keyPath, undefined, serial || undefined);
-        setDbPath(out.output);
-        setDecryptNote(
-          out.format === "plain"
-            ? "Input was already a plain SQLite database."
-            : `Decrypted ${out.format} · key@${out.key_offset} iv@${out.iv_offset} · ${fmtSize(out.plaintext_size)}`
-        );
-        finalDb = out.output;
       }
       if (!finalDb) {
-        throw new Error("No WhatsApp database could be located on the device.");
+        throw new Error("No WhatsApp database could be located.");
       }
       setWaStage("Parsing database — messages, chats & contacts…");
       const res = await api.recoverDb(finalDb, true, serial || undefined);
@@ -798,6 +816,75 @@ export default function App() {
     }
   };
 
+  // Per-app forensic extraction (Instagram / Messenger / Telegram / generic)
+  const extractApp = async (appId: string) => {
+    if (!serial || appExtractBusy) return;
+    setAppExtractBusy(true);
+    setError("");
+    try {
+      let data: InstagramData | MessengerData | TelegramData | ForensicExtraction;
+      switch (appId) {
+        case "instagram":
+          data = await api.extractInstagram(serial);
+          break;
+        case "messenger":
+          data = await api.extractMessenger(serial);
+          break;
+        case "telegram":
+          data = await api.extractTelegram(serial);
+          break;
+        default:
+          data = await api.extractAppForensic(serial, appId);
+          break;
+      }
+      setAppExtractResults(prev => {
+        const next = new Map(prev);
+        next.set(appId, data);
+        return next;
+      });
+      const appName = appId.charAt(0).toUpperCase() + appId.slice(1);
+      setStatus(`${appName} extraction complete`);
+    } catch (e) {
+      setError(`Extract ${appId} failed: ${typeof e === "string" ? e : (e as Error)?.message ?? String(e)}`);
+    } finally {
+      setAppExtractBusy(false);
+    }
+  };
+
+  // Launch an app on the connected device via ADB monkey
+  const [foregroundApp, setForegroundApp] = useState<string | null>(null);
+  const launchAppOnDevice = async (pkg: string) => {
+    if (!serial) return;
+    try {
+      setStatus(`Launching ${pkg} on device…`);
+      await api.launchApp(serial, pkg);
+      setStatus(`${pkg} launched on device`);
+      // Check foreground app after launch
+      setTimeout(async () => {
+        try {
+          const fg = await api.getForegroundApp(serial);
+          setForegroundApp(fg || null);
+        } catch {}
+      }, 1000);
+    } catch (e) {
+      setError(`Launch failed: ${typeof e === "string" ? e : (e as Error)?.message ?? String(e)}`);
+    }
+  };
+
+  // Poll foreground app periodically when on apps step
+  useEffect(() => {
+    if (step !== "apps" || !serial) return;
+    const check = async () => {
+      try {
+        const fg = await api.getForegroundApp(serial);
+        setForegroundApp(fg || null);
+      } catch {}
+    };
+    check();
+    const interval = setInterval(check, 3000);
+    return () => clearInterval(interval);
+  }, [step, serial]);
+
   // Read the inventory once on the first visit of the Apps step
   useEffect(() => {
     if (step === "apps" && serial && !apps && !appsBusy) loadApps();
@@ -807,10 +894,6 @@ export default function App() {
   const openApp = async (a: AppInfo) => {
     setAppSel(a); // list row shows immediately, details stream in
     if (!serial) return;
-    // Clicking a WhatsApp row reads its chats & contacts straight away
-    if (/whatsapp/i.test(a.package) && !busy) {
-      readWhatsApp().finally(() => setWaStage(""));
-    }
     try {
       const d = await api.appDetails(serial, a.package);
       setAppSel((cur) =>
@@ -905,75 +988,88 @@ export default function App() {
 
   return (
     <div className="app">
-      <header>
-        <div className="brand">
-          <span className="logo">🔶</span>
-          <div>
-            <h1>RecoverKit</h1>
-            <p>read-only mobile forensics</p>
+      {/* Top Header Bar */}
+      <header className="top-header">
+        <div className="header-left">
+          <div className="brand">
+            <div className="logo-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                <path d="M2 17l10 5 10-5"/>
+                <path d="M2 12l10 5 10-5"/>
+              </svg>
+            </div>
+            <div>
+              <h1>RecoverKit</h1>
+              <p>Read-only mobile forensics</p>
+            </div>
           </div>
         </div>
-        <div className="device-chip">
-          <span className={serial ? "dot" : "dot off"} />
-          {devices.length > 0 ? (
-            <select 
-              className="dev-sel" 
-              value={activeSerial} 
-              onChange={(e) => {
-                const s = e.target.value;
-                if (s && !sessions.has(s)) {
-                  const device = devices.find(d => d.serial === s);
-                  openDevice(s, device?.model ?? device?.product ?? "");
-                } else {
-                  setActiveSerial(s);
-                }
-              }}
-            >
-              <option value="">Select device...</option>
-              {devices.map((d) => (
-                <option key={d.serial} value={d.serial}>
-                  {d.model ?? d.product ?? d.serial} ({d.serial})
-                </option>
-              ))}
-            </select>
-          ) : (
-            <span>no device connected</span>
+        <div className="header-center">
+          <div className="case-info">
+            <svg className="case-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+            </svg>
+            <span className="case-label">Case #RK-2026-00931</span>
+            <span className="case-status active">Active</span>
+          </div>
+          {serial && mirror && (
+            <div className="device-quick-info">
+              <span>{mirror.model || "Device"}</span>
+              <span className="dot-sep">·</span>
+              <span>{serial.slice(0, 12)}</span>
+            </div>
           )}
-          <button className="mini" onClick={refreshDevices} disabled={busy} title="Refresh devices">
-            ⟳
-          </button>
         </div>
-        {busy && <span className="pill busy-pill">working…</span>}
-        {serial && mirror && (
-          <button
-            className="device-info-toggle"
-            onClick={() => setInfoBarOpen(!infoBarOpen)}
-            title="Device info"
-          >
-            {mirror.model || "Device"} · {mirror.android || "—"} · 🔋{mirror.battery}
-            <span style={{ marginLeft: 4, fontSize: 8 }}>{infoBarOpen ? "▲" : "▼"}</span>
+        <div className="header-right">
+          <button className="icon-btn" onClick={refreshDevices} disabled={busy} title="Refresh devices">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M23 4v6h-6"/>
+              <path d="M1 20v-6h6"/>
+              <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+            </svg>
           </button>
-        )}
-        <div style={{ flex: 1 }} />
-        <CallNotificationPanel callEvents={callEvents} onClear={() => setCallEvents([])} />
+          <div className="search-box">
+            <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="M21 21l-4.35-4.35"/>
+            </svg>
+            <input type="text" placeholder="Search evidence... (messages, calls, contacts, files, etc.)" />
+          </div>
+          <button className="icon-btn" title="Notifications">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 01-3.46 0"/>
+            </svg>
+          </button>
+          <button className="icon-btn" title="Settings">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+            </svg>
+          </button>
+          <button className="icon-btn" onClick={() => setToolsOpen(true)} title="Device Tools (Clipboard, WiFi, Backup, Export)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+            </svg>
+          </button>
+          <button className="icon-btn" onClick={() => setGalleryOpen(true)} title="Deleted Photo Recovery Gallery">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+              <circle cx="8.5" cy="8.5" r="1.5"/>
+              <polyline points="21 15 16 10 5 21"/>
+            </svg>
+          </button>
+          <button className="icon-btn" title="Help">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
+              <line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+          </button>
+          <div className="user-avatar">SK</div>
+        </div>
       </header>
-
-      {/* Collapsible device info bar */}
-      {infoBarOpen && serial && mirror && (
-        <div className="device-info-bar">
-          <span><i>Model</i> {mirror.model || "—"}</span>
-          <span><i>Android</i> {mirror.android || "—"}</span>
-          <span><i>Battery</i> {mirror.battery}</span>
-          <span><i>Storage</i> {mirror.storage}</span>
-          <span><i>Screen</i> {mirror.resolution}</span>
-          <span><i>Uptime</i> {mirror.uptime}</span>
-          <span><i>WhatsApp</i> {mirror.whatsapp}</span>
-          <button className="mini" disabled={mirrorBusy} onClick={() => loadMirror(serial)} title="Refresh">⟳</button>
-          <button className="mini" onClick={() => setDeviceDetailsOpen(true)} style={{ background: "var(--saffron)", color: "#fff", border: "1px solid var(--saffron-deep)" }}>
-            📋 Full Details
-          </button>
-        </div>
-      )}
       
       {/* Device Tab Bar for Multi-Device Support */}
       {sessions.size > 0 && (
@@ -1002,57 +1098,192 @@ export default function App() {
 
       <div className="body">
         <aside className="sidebar">
-          {/* Progress indicator */}
-          <div className="sidebar-progress" title={`${progress.done} of ${progress.total} steps complete`}>
-            <div className="progress-bar">
-              <div className="progress-fill" style={{ width: `${progress.pct}%` }} />
-            </div>
-            <span className="progress-label">{progress.done}/{progress.total} complete</span>
+          {/* CASE Section */}
+          <div className="nav-section">
+            <div className="section-header">CASE</div>
+            <button className={`nav-item ${step === "connect" ? "active" : ""}`} onClick={() => setStep("connect")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+                  <polyline points="9 22 9 12 15 12 15 22"/>
+                </svg>
+              </span>
+              <span>Overview</span>
+            </button>
+            <button className={`nav-item ${step === "case" ? "active" : ""}`} onClick={() => setStep("case")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+                </svg>
+              </span>
+              <span>Evidence</span>
+            </button>
+            <button className={`nav-item ${step === "timeline" ? "active" : ""}`} onClick={() => setStep("timeline")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <polyline points="12 6 12 12 16 14"/>
+                </svg>
+              </span>
+              <span>Timeline</span>
+            </button>
+          </div>
+          
+          {/* DEVICE Section */}
+          <div className="nav-section">
+            <div className="section-header">DEVICE</div>
+            <button className={`nav-item ${step === "system" ? "active" : ""}`} onClick={() => setStep("system")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
+                  <line x1="12" y1="18" x2="12.01" y2="18"/>
+                </svg>
+              </span>
+              <span>System</span>
+            </button>
+            <button className={`nav-item ${step === "apps" ? "active" : ""}`} onClick={() => setStep("apps")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="3" width="7" height="7"/>
+                  <rect x="14" y="3" width="7" height="7"/>
+                  <rect x="14" y="14" width="7" height="7"/>
+                  <rect x="3" y="14" width="7" height="7"/>
+                </svg>
+              </span>
+              <span>Apps</span>
+            </button>
+            <button className={`nav-item ${step === "messages" ? "active" : ""}`} onClick={() => setStep("messages")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                </svg>
+              </span>
+              <span>Messages</span>
+            </button>
+            <button className={`nav-item ${step === "calls" ? "active" : ""}`} onClick={() => setStep("calls")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/>
+                </svg>
+              </span>
+              <span>Calls</span>
+            </button>
+            <button className={`nav-item ${step === "contacts" ? "active" : ""}`} onClick={() => setStep("contacts")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 00-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 010 7.75"/>
+                </svg>
+              </span>
+              <span>Contacts</span>
+            </button>
+            <button className={`nav-item ${step === "media" ? "active" : ""}`} onClick={() => setStep("media")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                  <circle cx="8.5" cy="8.5" r="1.5"/>
+                  <polyline points="21 15 16 10 5 21"/>
+                </svg>
+              </span>
+              <span>Media</span>
+            </button>
+            <button className={`nav-item ${step === "sim_forensics" ? "active" : ""}`} onClick={() => setStep("sim_forensics")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M5 12.55a11 11 0 0114.08 0"/>
+                  <path d="M1.42 9a16 16 0 0121.16 0"/>
+                  <path d="M8.53 16.11a6 6 0 016.95 0"/>
+                  <line x1="12" y1="20" x2="12.01" y2="20"/>
+                </svg>
+              </span>
+              <span>SIM</span>
+            </button>
+          </div>
+          
+          {/* ANALYSIS Section */}
+          <div className="nav-section">
+            <div className="section-header">ANALYSIS</div>
+            <button className={`nav-item ${step === "artifacts" ? "active" : ""}`} onClick={() => setStep("artifacts")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+              </span>
+              <span>Artifacts</span>
+            </button>
+            <button className={`nav-item ${step === "scan" ? "active" : ""}`} onClick={() => setStep("scan")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  <line x1="11" y1="8" x2="11" y2="14"/>
+                  <line x1="8" y1="11" x2="14" y2="11"/>
+                </svg>
+              </span>
+              <span>Search</span>
+            </button>
+            <button className={`nav-item ${step === "recover" ? "active" : ""}`} onClick={() => setStep("recover")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M23 4v6h-6"/>
+                  <path d="M1 20v-6h6"/>
+                  <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                </svg>
+              </span>
+              <span>Recovery</span>
+            </button>
+          </div>
+          
+          {/* REPORT Section */}
+          <div className="nav-section">
+            <div className="section-header">REPORT</div>
+            <button className={`nav-item ${step === "recover" ? "active" : ""}`} onClick={() => setStep("recover")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="20" x2="18" y2="10"/>
+                  <line x1="12" y1="20" x2="12" y2="4"/>
+                  <line x1="6" y1="20" x2="6" y2="14"/>
+                </svg>
+              </span>
+              <span>Findings</span>
+            </button>
+            <button className={`nav-item ${step === "case" ? "active" : ""}`} onClick={() => setStep("case")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                  <polyline points="10 9 9 9 8 9"/>
+                </svg>
+              </span>
+              <span>Reports</span>
+            </button>
+            <button className={`nav-item ${step === "export" ? "active" : ""}`} onClick={() => setStep("export")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </span>
+              <span>Export</span>
+            </button>
           </div>
 
-          {PHASES.map((phase) => (
-            <div key={phase.label} className="nav-phase-group">
-              <div className="phase-header">
-                <span>{phase.icon}</span>
-                <span>{phase.label}</span>
-                {phaseDone[phase.label] && <span className="phase-check">✓</span>}
+          {/* Device Status Footer */}
+          {serial && (
+            <div className="device-status-footer">
+              <span className="status-dot connected"></span>
+              <div className="status-text">
+                <div>Device Connected</div>
+                <div className="status-sub">Read-only mode</div>
               </div>
-              {phase.steps.map((stepId) => {
-                const s = STEPS.find(st => st.id === stepId)!;
-                const done = stepDone[stepId];
-                const isActive = step === stepId;
-                const isForensics = stepId === "deep";
-                const showSub = isForensics && ["deep", "deleted", "browser", "network"].includes(step);
-                return (
-                  <div key={s.id}>
-                    <button
-                      className={`nav${isActive || showSub ? " active" : ""}${done ? " done" : ""}`}
-                      onClick={() => setStep(s.id)}
-                      title={s.label}
-                    >
-                      <span className="nav-icon">{s.icon}</span>
-                      <span className="nav-label">{s.label}</span>
-                      {done && <span className="nav-check">✓</span>}
-                    </button>
-                    {/* Forensics sub-tabs — shown only when inside forensic steps */}
-                    {showSub && (
-                      <div className="nav-sub">
-                        {FORENSICS_SUB.map((sub) => (
-                          <button
-                            key={sub.id}
-                            className={`nav-sub-item${step === sub.id ? " active" : ""}`}
-                            onClick={() => setStep(sub.id)}
-                          >
-                            <span>{sub.icon}</span> {sub.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
             </div>
-          ))}
+          )}
         </aside>
 
         <main>
@@ -1096,6 +1327,9 @@ export default function App() {
             onAutoRefreshChange={setAutoRefresh}
             onStreamFpsChange={setStreamFps} onStreamModeChange={setStreamMode}
             mirror={mirror}
+            controlMode={controlMode} onControlModeChange={setControlMode}
+            headlessActive={headlessActive} headlessBusy={headlessBusy} onToggleHeadless={toggleHeadless}
+            paused={paused} onPausedChange={setPaused}
             onRingDevice={() => {
               if (!serial) return;
               setStatus("Ringing device...");
@@ -1140,6 +1374,20 @@ export default function App() {
           </>
         )}
 
+        {step === "system" && (
+          <section className="workbench wb-system">
+            <div className="panel" style={{ gridArea: "strip", borderBottom: "1px solid #ddd" }}>
+              <div className="panel-bar">
+                <span className="panel-title">System</span>
+                <span className="hint">Device overview &amp; hardware details</span>
+              </div>
+            </div>
+            <div style={{ gridArea: "main", padding: 16, overflow: "auto" }}>
+              <OverviewTab serial={serial} mirror={mirror} directData={directData} />
+            </div>
+          </section>
+        )}
+
         {step === "apps" && (
           <AppsStep
             serial={serial} busy={busy}
@@ -1148,8 +1396,43 @@ export default function App() {
             appFilter={appFilter} showSystem={showSystem}
             shownApps={shownApps} appSel={appSel} waStage={waStage}
             result={result}
+            appExtractResults={appExtractResults} appExtractBusy={appExtractBusy}
+            foregroundApp={foregroundApp}
+            screenMirror={
+              <ScreenMirrorPanel
+                serial={serial}
+                shot={shot} shotTs={shotTs} shotDark={shotDark}
+                mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
+                liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
+                autoRefresh={autoRefresh}
+                mirror={mirror}
+                controlMode={controlMode}
+                onControlModeChange={setControlMode}
+                headlessActive={headlessActive}
+                headlessBusy={headlessBusy}
+                onToggleHeadless={toggleHeadless}
+                paused={paused}
+                onPausedChange={setPaused}
+                captures={captures} captureBusy={captureBusy}
+                autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
+                onCapture={capture}
+                onStartStream={startStream}
+                onStopStream={stopStream}
+                onTakeScreenshot={takeScreenshot}
+                onStartAuto={startAutoCaptureHandler}
+                onStopAuto={stopAutoCaptureHandler}
+                onIntervalChange={setCaptureInterval}
+                onRefreshCaptures={loadCaptures}
+                onDeleteCapture={deleteCapture}
+                onAutoRefreshChange={setAutoRefresh}
+                onStreamFpsChange={setStreamFps}
+                onStreamModeChange={setStreamMode}
+              />
+            }
             onDetectApps={detectMessagingApps} onLoadApps={loadApps}
             onOpenApp={openApp}
+            onExtractApp={extractApp}
+            onLaunchApp={launchAppOnDevice}
             onFilterChange={setAppFilter} onShowSystemChange={setShowSystem}
             onReadWhatsApp={readWhatsApp}
             onGoTo={setStep}
@@ -1182,6 +1465,29 @@ export default function App() {
 
         {step === "deep" && (
           <DeepForensicsStep serial={serial} onGoTo={setStep} />
+        )}
+
+        {step === "messages" && (
+          <MessagesStep serial={serial} waDeepResult={waDeepResult} recovery={result} directData={directData} onGoTo={setStep} />
+        )}
+
+        {step === "calls" && (
+          <CallsStep serial={serial} callEvents={callEvents} callRecordings={callRecordings} directData={directData} callMonitorActive={callMonitorActive} onGoTo={setStep} />
+        )}
+
+        {step === "contacts" && (
+          <ContactsStep serial={serial} recovery={result} directData={directData} onGoTo={setStep} />
+        )}
+
+        {step === "sim_forensics" && (
+          <SimForensicsStep serial={serial}
+            simSnapshot={simSnapshot} simBaseline={simBaseline} simHistorical={simHistorical} simVerdict={simVerdict} simHistory={simHistory} simBusy={simBusy}
+            onCollectSim={collectSim} onSimBaseline={applySimBaseline} onSimSwapCheck={runSimSwapCheck} onDeleteSimSnap={deleteSimSnap}
+            onGoTo={setStep} />
+        )}
+
+        {step === "artifacts" && (
+          <ArtifactsStep serial={serial} onGoTo={setStep} />
         )}
 
         {step === "deleted" && (
@@ -1274,6 +1580,19 @@ export default function App() {
           >
             🐛 Debug
           </button>
+          <button
+            className="mini"
+            onClick={() => setToolsOpen(true)}
+            title="Device tools: clipboard, WiFi, backup, export"
+            style={{
+              background: "transparent",
+              color: "var(--muted)",
+              border: "1px solid var(--line)",
+              marginRight: 8,
+            }}
+          >
+            🛠 Tools
+          </button>
           read-only by design · v0.1.0
         </span>
       </footer>
@@ -1296,6 +1615,14 @@ export default function App() {
             <DeviceDetailsPanel serial={serial} />
           </div>
         </div>
+      )}
+
+      {/* Tools Panel */}
+      {toolsOpen && (
+        <ToolsPanel serial={serial} onClose={() => setToolsOpen(false)} />
+      )}
+      {galleryOpen && (
+        <DeletedPhotoGallery serial={serial} outputDir="D:\\recovery-tool\\workspace" onClose={() => setGalleryOpen(false)} />
       )}
     </div>
   );

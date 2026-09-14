@@ -29,4 +29,6 @@ sha2 = "0.10"
 flate2 = "1"
 tokio = { version = "1", features = ["rt"] }
 rayon = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }
 

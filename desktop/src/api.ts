@@ -267,3 +267,346 @@ export const captureDevicePhoto = (serial: string) =>
 
 export const captureDeviceMic = (serial: string, duration: number = 5) =>
   invoke<MicCaptureResult>("capture_device_mic", { serial, duration });
+
+/** Launch an app on the connected device via ADB monkey. */
+export const launchApp = (serial: string, pkg: string) =>
+  invoke<string>("launch_app", { serial, package: pkg });
+
+// ── Remote Control ──
+export const screenTap = (serial: string, x: number, y: number) =>
+  invoke<string>("screen_tap", { serial, x, y });
+
+export const screenSwipe = (serial: string, x1: number, y1: number, x2: number, y2: number, durationMs: number = 300) =>
+  invoke<string>("screen_swipe", { serial, x1, y1, x2, y2, durationMs });
+
+export const screenText = (serial: string, text: string) =>
+  invoke<string>("screen_text", { serial, text });
+
+export const screenKey = (serial: string, keycode: number) =>
+  invoke<string>("screen_key", { serial, keycode });
+
+/** Get the currently running foreground app package on the device. */
+export const getForegroundApp = (serial: string) =>
+  invoke<string>("get_foreground_app", { serial });
+
+// ── Headless Mode ──
+/** Start headless mode: acquire wake lock, turn screen off, keep CPU awake. */
+export const headlessStart = (serial: string) =>
+  invoke<string>("headless_start", { serial });
+
+/** Stop headless mode: wake screen, release wake lock. */
+export const headlessStop = (serial: string) =>
+  invoke<string>("headless_stop", { serial });
+
+/** Check if the device screen is currently on or off. */
+export const getScreenState = (serial: string) =>
+  invoke<string>("get_screen_state", { serial });
+
+/** Rotate the physical device display (0=portrait, 1=90°, 2=180°, 3=270°). */
+export const deviceRotate = (serial: string, rotation: number) =>
+  invoke<string>("device_rotate", { serial, rotation });
+
+/** Restore auto-rotation (accelerometer controls orientation). */
+export const deviceAutoRotate = (serial: string) =>
+  invoke<string>("device_auto_rotate", { serial });
+
+/** Change device display density (zoom level). Higher DPI = bigger UI elements. */
+export const deviceZoom = (serial: string, density: number) =>
+  invoke<string>("device_zoom", { serial, density });
+
+/** Reset device density to factory default. */
+export const deviceZoomReset = (serial: string) =>
+  invoke<string>("device_zoom_reset", { serial });
+
+/** Get the device's current display density (DPI). */
+export const deviceGetDensity = (serial: string) =>
+  invoke<string>("device_get_density", { serial });
+
+// ── Device Tools ──
+export const getClipboard = (serial: string) =>
+  invoke<string>("get_clipboard", { serial });
+export const getNotifications = (serial: string) =>
+  invoke<string>("get_notifications", { serial });
+export const getWifiCredentials = (serial: string) =>
+  invoke<string>("get_wifi_credentials", { serial });
+export const createDeviceBackup = (serial: string, outputDir: string) =>
+  invoke<string>("create_device_backup", { serial, outputDir });
+export const exportDataJson = (data: string, filename: string, outputDir: string) =>
+  invoke<string>("export_data_json", { data, filename, outputDir });
+export const pullAppData = (serial: string, package_: string, outputDir: string) =>
+  invoke<string>("pull_app_data", { serial, package: package_, outputDir });
+export const searchDatabase = (dbPath: string, query: string) =>
+  invoke<string>("search_database", { dbPath: dbPath, query });
+
+// ── Advanced Tools ──
+export const listDeviceFiles = (serial: string, path: string) =>
+  invoke<string>("list_device_files", { serial, path });
+export const getRunningProcesses = (serial: string) =>
+  invoke<string>("get_running_processes", { serial });
+export const extractApk = (serial: string, package_: string, outputDir: string) =>
+  invoke<string>("extract_apk", { serial, package: package_, outputDir });
+export const getBatteryStats = (serial: string) =>
+  invoke<string>("get_battery_stats", { serial });
+export const fullDeviceExtract = (serial: string, outputDir: string) =>
+  invoke<string>("full_device_extract", { serial, outputDir });
+export const pullDeviceFile = (serial: string, remotePath: string, outputDir: string) =>
+  invoke<string>("pull_device_file", { serial, remotePath, outputDir });
+export const scanThumbnails = (serial: string, outputDir: string) =>
+  invoke<string>("scan_thumbnails", { serial, outputDir });
+export const getDeviceTemperatures = (serial: string) =>
+  invoke<string>("get_device_temperatures", { serial });
+
+// ── Thermal Stress Test ──
+export const runThermalStressTest = (serial: string, durationSecs: number) =>
+  invoke<string>("run_thermal_stress_test", { serial, durationSecs });
+
+// ── Device Cooling ──
+export const setCpuGovernor = (serial: string, governor: string) =>
+  invoke<string>("set_cpu_governor", { serial, governor });
+export const killHeavyProcesses = (serial: string) =>
+  invoke<string>("kill_heavy_processes", { serial });
+export const setScreenBrightness = (serial: string, level: number) =>
+  invoke<string>("set_screen_brightness", { serial, level });
+export const setAutoSync = (serial: string, enabled: boolean) =>
+  invoke<string>("set_auto_sync", { serial, enabled });
+export const setBatterySaver = (serial: string, enabled: boolean) =>
+  invoke<string>("set_battery_saver", { serial, enabled });
+export const applyCoolingMode = (serial: string) =>
+  invoke<string>("apply_cooling_mode", { serial });
+
+// ── Forensic Evidence ──
+export const hashEvidence = (filePath: string) =>
+  invoke<string>("hash_evidence", { filePath });
+export const hashDirectory = (dirPath: string) =>
+  invoke<string>("hash_directory", { dirPath });
+export const startLogcat = (serial: string) =>
+  invoke<string>("start_logcat", { serial });
+export const getLogcatSnapshot = (serial: string, lines?: number) =>
+  invoke<string>("get_logcat_snapshot", { serial, lines });
+export const globalKeywordSearch = (dataDir: string, keyword: string) =>
+  invoke<string>("global_keyword_search", { dataDir, keyword });
+export const getUsageTimeline = (serial: string) =>
+  invoke<string>("get_usage_timeline", { serial });
+export const generateEvidenceReport = (caseId: string, deviceSerial: string, dataDir: string, outputDir: string) =>
+  invoke<string>("generate_forensic_report", { caseId, deviceSerial, dataDir, outputDir });
+export const auditAppPermissions = (serial: string) =>
+  invoke<string>("audit_app_permissions", { serial });
+
+// ── Security & Forensics ──
+export const detectSpyware = (serial: string) =>
+  invoke<string>("detect_spyware", { serial });
+export const detectLinkedDevices = (serial: string) =>
+  invoke<string>("detect_linked_devices", { serial });
+export const getBluetoothForensics = (serial: string) =>
+  invoke<string>("get_bluetooth_forensics", { serial });
+export const getNetworkConnections = (serial: string) =>
+  invoke<string>("get_network_connections", { serial });
+export const getClipboardHistory = (serial: string, count?: number) =>
+  invoke<string>("get_clipboard_history", { serial, count });
+
+// ── Image Forensics ──
+/** Run Error Level Analysis on an image to detect manipulation. */
+export const imageEla = (imagePath: string, outputDir: string, quality: number = 90, scale: number = 15) =>
+  invoke<string>("image_ela", { imagePath, outputDir, quality, scale });
+
+/** Extract comprehensive image metadata (dimensions, format, EXIF, GPS). */
+export const imageMetadata = (imagePath: string) =>
+  invoke<string>("image_metadata", { imagePath });
+
+// ── Device Identity & Forensics ──
+/** Collect device identity: IMEI, ESN, MEID, serial, brand, model. */
+export const collectDeviceIdentity = (serial: string) =>
+  invoke<string>("collect_device_identity", { serial });
+
+/** Extract lock screen info: type, status, security settings. */
+export const extractLockInfo = (serial: string) =>
+  invoke<string>("extract_lock_info", { serial });
+
+/** Recover deleted contacts from contacts2.db. */
+export const recoverDeletedContacts = (serial: string, outputDir: string) =>
+  invoke<string>("recover_deleted_contacts", { serial, outputDir });
+
+/** Collect cell tower connection history. */
+export const collectCellTowerHistory = (serial: string) =>
+  invoke<string>("collect_cell_tower_history", { serial });
+
+/** Detect anti-forensics: wipers, cache cleaners, tampering evidence. */
+export const detectAntiForensics = (serial: string) =>
+  invoke<string>("detect_anti_forensics", { serial });
+
+/** Collect dual SIM information for both slots. */
+export const collectDualSimInfo = (serial: string) =>
+  invoke<string>("collect_dual_sim_info", { serial });
+
+/** Collect timezone fingerprint: detect manual time changes. */
+export const collectTimezoneFingerprint = (serial: string) =>
+  invoke<string>("collect_timezone_fingerprint", { serial });
+
+/** Analyze device storage: visual breakdown of space usage. */
+export const analyzeStorage = (serial: string) =>
+  invoke<string>("analyze_storage", { serial });
+
+/** Recover deleted voice memos/recordings from the device. */
+export const recoverVoiceMemos = (serial: string, outputDir: string) =>
+  invoke<string>("recover_voice_memos", { serial, outputDir });
+
+/** Extract saved passwords metadata from browsers. */
+export const extractSavedPasswords = (serial: string) =>
+  invoke<string>("extract_saved_passwords", { serial });
+
+// ── GPS / Location Timeline ──
+/** Collect GPS/location history from the device. */
+export const collectGpsTimeline = (serial: string) =>
+  invoke<string>("collect_gps_timeline", { serial });
+
+// ── WhatsApp Chat Viewer ──
+/** Extract WhatsApp chat messages from the device. */
+export const extractWhatsappChats = (serial: string, outputDir: string) =>
+  invoke<string>("extract_whatsapp_chats", { serial, outputDir });
+
+// ── Email Extraction ──
+/** Extract email account metadata from Gmail, Outlook, etc. */
+export const extractEmailAccounts = (serial: string) =>
+  invoke<string>("extract_email_accounts", { serial });
+
+// ── Browser History Viewer ──
+/** Extract browser history, bookmarks, and tabs. */
+export const extractBrowserHistory = (serial: string) =>
+  invoke<string>("extract_browser_history", { serial });
+
+// ── Video Metadata ──
+/** Extract metadata from video files on the device. */
+export const extractVideoMetadata = (serial: string) =>
+  invoke<string>("extract_video_metadata", { serial });
+
+// ── App Timeline Correlation ──
+/** Build a correlated timeline of app usage events. */
+export const extractAppTimeline = (serial: string) =>
+  invoke<string>("extract_app_timeline", { serial });
+
+// ── Cloud Account Extraction ──
+/** Extract cloud account info: Google, Samsung, Xiaomi, etc. */
+export const extractCloudAccounts = (serial: string) =>
+  invoke<string>("extract_cloud_accounts", { serial });
+
+// ── Encrypted Backup Analysis ──
+/** Analyze encrypted backups found on the device. */
+export const analyzeEncryptedBackups = (serial: string) =>
+  invoke<string>("analyze_encrypted_backups", { serial });
+
+// ── Automated PDF Report ──
+/** Generate a comprehensive forensic report. */
+export const generatePdfReport = (serial: string, outputDir: string, caseId: string) =>
+  invoke<string>("generate_pdf_report", { serial, outputDir, caseId });
+
+// ═══════════════════════════════════════════════════════════════════
+// ADVANCED FORENSIC FEATURES (#21-#38)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── #21 Deleted SMS/MMS Recovery ──
+export const recoverDeletedSmsAdvanced = (serial: string, outputDir: string) =>
+  invoke<string>("recover_deleted_sms_advanced", { serial, outputDir });
+
+// ── #22 Call Log Forensics ──
+export const extractCallLogs = (serial: string) =>
+  invoke<string>("extract_call_logs", { serial });
+
+// ── #23 WiFi Connection History ──
+export const extractWifiHistory = (serial: string) =>
+  invoke<string>("extract_wifi_history", { serial });
+
+// ── #24 Bluetooth Device Forensics ──
+export const extractBluetoothDevices = (serial: string) =>
+  invoke<string>("extract_bluetooth_devices", { serial });
+
+// ── #25 Social Media Extraction ──
+export const extractSocialMedia = (serial: string, outputDir: string) =>
+  invoke<string>("extract_social_media", { serial, outputDir });
+
+// ── #26 Deleted Photo Recovery ──
+export const recoverDeletedPhotos = (serial: string, outputDir: string) =>
+  invoke<string>("recover_deleted_photos", { serial, outputDir });
+
+// ── #27 Keyboard Dictionary Recovery ──
+export const extractKeyboardDictionary = (serial: string) =>
+  invoke<string>("extract_keyboard_dictionary", { serial });
+
+// ── #28 Clipboard Forensics ──
+export const extractClipboardForensics = (serial: string) =>
+  invoke<string>("extract_clipboard_forensics", { serial });
+
+// ── #29 USB Connection Forensics ──
+export const extractUsbConnections = (serial: string) =>
+  invoke<string>("extract_usb_connections", { serial });
+
+// ── #30 Power/Battery Forensics ──
+export const extractPowerForensics = (serial: string) =>
+  invoke<string>("extract_power_forensics", { serial });
+
+// ── #31 Notification History ──
+export const extractNotificationHistory = (serial: string) =>
+  invoke<string>("extract_notification_history", { serial });
+
+// ── #32 Screen Time / Digital Wellbeing ──
+export const extractScreenTime = (serial: string) =>
+  invoke<string>("extract_screen_time", { serial });
+
+// ── #33 SQLite WAL/Journal Carving ──
+export const carveSqliteWal = (serial: string, outputDir: string) =>
+  invoke<string>("carve_sqlite_wal", { serial, outputDir });
+
+// ── #34 App Sandbox Extraction ──
+export const extractAppSandbox = (serial: string) =>
+  invoke<string>("extract_app_sandbox", { serial });
+
+// ── #35 Hidden Partition Scanner ──
+export const scanHiddenPartitions = (serial: string) =>
+  invoke<string>("scan_hidden_partitions", { serial });
+
+// ── #36 Network Traffic Snapshot ──
+export const extractNetworkTraffic = (serial: string) =>
+  invoke<string>("extract_network_traffic", { serial });
+
+// ── #37 Sensor Data Analysis ──
+export const extractSensorData = (serial: string) =>
+  invoke<string>("extract_sensor_data", { serial });
+
+// ── #38 Full File System Manifest ──
+export const generateFileManifest = (serial: string, outputDir: string) =>
+  invoke<string>("generate_file_manifest", { serial, outputDir });
+
+// ═══════════════════════════════════════════════════════════════════
+// BUG BOUNTY HUNTER FEATURES (#39-#46)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── #39 Permission Auditor Pro ──
+export const auditPermissionsPro = (serial: string) =>
+  invoke<string>("audit_permissions_pro", { serial });
+
+// ── #40 Intent Fuzzer ──
+export const fuzzIntents = (serial: string) =>
+  invoke<string>("fuzz_intents", { serial });
+
+// ── #41 SELinux Policy Analyzer ──
+export const analyzeSelinux = (serial: string) =>
+  invoke<string>("analyze_selinux", { serial });
+
+// ── #42 Content Provider Enumerator ──
+export const enumerateContentProviders = (serial: string) =>
+  invoke<string>("enumerate_content_providers", { serial });
+
+// ── #43 Privilege Escalation Tester ──
+export const testPrivilegeEscalation = (serial: string) =>
+  invoke<string>("test_privilege_escalation", { serial });
+
+// ── #44 Secure Element Probe ──
+export const probeSecureElement = (serial: string) =>
+  invoke<string>("probe_secure_element", { serial });
+
+// ── #45 Bootloader / Verified Boot Checker ──
+export const checkVerifiedBoot = (serial: string) =>
+  invoke<string>("check_verified_boot", { serial });
+
+// ── #46 Kernel Exploit Detector ──
+export const detectKernelExploits = (serial: string) =>
+  invoke<string>("detect_kernel_exploits", { serial });

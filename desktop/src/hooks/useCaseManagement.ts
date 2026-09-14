@@ -3,7 +3,7 @@ import { confirm } from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
 import type { Case, CaseSummary, EvidenceItem, AuditEntry } from "../types";
 
-type Step = "connect" | "apps" | "scan" | "media" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
 
 interface UseCaseManagementArgs {
   serial: string;

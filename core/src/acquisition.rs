@@ -1233,20 +1233,29 @@ fn try_obtain_key(adb: &AdbClient, serial: &str, temp_dir: &std::path::Path, res
         }
     }
     
-    // ── Method 5: ADB Backup (Android < 12, requires user tap on device) ──
-    let backup_ab = temp_dir.join("whatsapp_backup.ab");
-    result.notes.push("Trying ADB backup method (tap 'Back up' on device if prompted)…".to_string());
-    if adb.backup(serial, "com.whatsapp", &backup_ab).is_ok() {
-        if let Some(key) = extract_key_from_ab_backup(&backup_ab, &key_path) {
-            result.key_obtained = true;
-            result.key_method = Some("ADB backup extraction".to_string());
-            result.notes.push(format!("Key extracted from ADB backup ({} bytes)", key.len()));
-            std::fs::remove_file(&backup_ab).ok(); // Clean up backup file
-            return Some(key_path.clone());
+    // ── Method 5: ADB Backup (Android < 12 only — blocked on SDK 31+) ──
+    let sdk_too_high = adb.exec_out(serial, &["sh", "-c", "getprop ro.build.version.sdk"])
+        .ok()
+        .and_then(|b| String::from_utf8_lossy(&b).trim().parse::<i32>().ok())
+        .map(|sdk| sdk >= 31)
+        .unwrap_or(false);
+
+    if sdk_too_high {
+        result.notes.push("Skipping ADB backup method — Android 12+ (SDK 31+) blocks adb backup for WhatsApp".to_string());
+    } else {
+        let backup_ab = temp_dir.join("whatsapp_backup.ab");
+        result.notes.push("Trying ADB backup method (tap 'Back up' on device if prompted)…".to_string());
+        if adb.backup(serial, "com.whatsapp", &backup_ab).is_ok() {
+            if let Some(key) = extract_key_from_ab_backup(&backup_ab, &key_path) {
+                result.key_obtained = true;
+                result.key_method = Some("ADB backup extraction".to_string());
+                result.notes.push(format!("Key extracted from ADB backup ({} bytes)", key.len()));
+                std::fs::remove_file(&backup_ab).ok();
+                return Some(key_path.clone());
+            }
         }
+        std::fs::remove_file(&backup_ab).ok();
     }
-    // Clean up backup file if extraction failed
-    std::fs::remove_file(&backup_ab).ok();
     
     None
 }

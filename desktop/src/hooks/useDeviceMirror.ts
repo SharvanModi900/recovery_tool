@@ -23,6 +23,10 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
   const [streamMode, setStreamMode] = useState("normal");
   const [isVideoFrame, setIsVideoFrame] = useState(false);
 
+  // Headless mode state
+  const [headlessActive, setHeadlessActive] = useState(false);
+  const [headlessBusy, setHeadlessBusy] = useState(false);
+
   // Screen capture state
   const [captures, setCaptures] = useState<ScreenCapture[]>([]);
   const [autoCaptureActive, setAutoCaptureActive] = useState(false);
@@ -75,16 +79,31 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
   };
 
   // Listen for screen-frame events when live stream is active
+  // Throttle to avoid flickering — batch state updates and cap at ~12 fps
+  const lastFrameRef = useRef(0);
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
+
+  // Keep ref in sync with state so the event listener can read it without re-subscribing
+  useEffect(() => { pausedRef.current = paused; }, [paused]);
+
   useEffect(() => {
     if (!liveStream || !serial) return;
     const unlisten = listen<{ serial: string; path: string; frame: number; timestamp: number; isVideo: boolean; mode: string }>(
       "screen-frame",
       (event) => {
+        if (pausedRef.current) return; // Paused — drop all frames
         if (event.payload.serial === serial) {
-          setShot(event.payload.path);
-          setShotTs(event.payload.timestamp);
+          const now = Date.now();
+          // Throttle: skip frames that arrive within 80ms of the last accepted one (~12fps cap)
+          if (now - lastFrameRef.current < 80) return;
+          lastFrameRef.current = now;
+          // Batch all state updates together to prevent cascading re-renders
+          const p = event.payload;
+          setShot(p.path);
+          setShotTs(p.timestamp);
           setShotDark(false);
-          setIsVideoFrame(event.payload.isVideo || false);
+          setIsVideoFrame(p.isVideo || false);
         }
       }
     );
@@ -95,10 +114,64 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
 
   // Auto-refresh mirror + telemetry (throttled to avoid lag)
   const refreshTickRef = useRef(0);
+  const [controlMode, setControlModeRaw] = useState(false);
+
+  // Wrap setControlMode to auto-start/stop live stream
+  const setControlMode = useCallback((v: boolean) => {
+    setControlModeRaw(v);
+    if (serial) {
+      if (v) {
+        // Auto-start live stream at 10fps when control is enabled
+        api.startScreenStream(serial, 10, "normal").catch(() => {});
+        setLiveStream(true);
+      } else {
+        // Stop stream when control is disabled
+        api.stopScreenStream(serial).catch(() => {});
+        setLiveStream(false);
+      }
+    }
+  }, [serial]);
+
+  // Headless mode toggle — screen off + live stream + control
+  const toggleHeadless = useCallback(async (activate: boolean) => {
+    if (!serial) return;
+    setHeadlessBusy(true);
+    try {
+      if (activate) {
+        // 1. Start backend headless (wake lock + screen off)
+        await api.headlessStart(serial);
+        // 2. Start live stream in fast mode (screenrecord works with display off)
+        await api.startScreenStream(serial, 15, "fast");
+        setLiveStream(true);
+        setStreamFps(15);
+        setStreamMode("fast");
+        // 3. Enable control mode
+        setControlModeRaw(true);
+        setHeadlessActive(true);
+        setStatus("Headless mode ON — phone screen off, controlling from desktop");
+      } else {
+        // 1. Stop headless backend (wake screen, release lock)
+        await api.headlessStop(serial);
+        // 2. Stop stream
+        await api.stopScreenStream(serial);
+        setLiveStream(false);
+        // 3. Disable control mode
+        setControlModeRaw(false);
+        setHeadlessActive(false);
+        setStatus("Headless mode OFF — phone screen restored");
+      }
+    } catch (e) {
+      setError(`Headless mode failed: ${e}`);
+    } finally {
+      setHeadlessBusy(false);
+    }
+  }, [serial, setStatus, setError]);
+
+  // Normal auto-refresh when NOT in control/stream mode
   useEffect(() => {
-    if (!serial || !autoRefresh || step !== "connect") return;
+    if (!serial || !autoRefresh || (step !== "connect" && step !== "apps")) return;
+    if (controlMode) return; // Don't do periodic refresh when streaming
     const t = setInterval(() => {
-      // Only refresh every 3rd tick (~15s) to avoid constant ADB spam
       refreshTickRef.current++;
       if (refreshTickRef.current % 3 === 1) {
         capture(serial);
@@ -108,7 +181,7 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
     }, 5000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serial, autoRefresh, step]);
+  }, [serial, autoRefresh, step, controlMode]);
 
   // Screen capture handlers
   const loadCaptures = useCallback(async () => {
@@ -176,7 +249,10 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
   return {
     mirror, shot, shotTs, shotDark, mirrorErr,
     autoRefresh, setAutoRefresh,
+    controlMode, setControlMode,
     mirrorBusy, liveStream, streamFps, setStreamFps, streamMode, setStreamMode, isVideoFrame,
+    paused, setPaused,
+    headlessActive, headlessBusy, toggleHeadless,
     captures, autoCaptureActive, captureBusy, captureInterval, setCaptureInterval,
     loadMirror, capture, startStream, stopStream, resetMirror,
     loadCaptures, takeScreenshot, startAutoCaptureHandler, stopAutoCaptureHandler, deleteCapture,

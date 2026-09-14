@@ -92,6 +92,13 @@ interface ConnectStepProps {
   onAutoRefreshChange: (v: boolean) => void;
   onStreamFpsChange: (v: number) => void;
   onStreamModeChange: (v: string) => void;
+  controlMode: boolean;
+  onControlModeChange: (v: boolean) => void;
+  headlessActive: boolean;
+  headlessBusy: boolean;
+  onToggleHeadless: (v: boolean) => void;
+  paused: boolean;
+  onPausedChange: (v: boolean) => void;
   onRingDevice: () => void;
   onLockDevice: () => void;
   onToggleCharging: () => void;
@@ -114,6 +121,9 @@ export function ConnectStep(props: ConnectStepProps) {
     autoRefresh, captures, captureBusy, autoCaptureActive, captureInterval,
     onCapture, onStartStream, onStopStream, onTakeScreenshot, onStartAuto, onStopAuto,
     onIntervalChange, onRefreshCaptures, onDeleteCapture, onAutoRefreshChange, onStreamFpsChange, onStreamModeChange,
+    controlMode, onControlModeChange,
+    headlessActive, headlessBusy, onToggleHeadless,
+    paused, onPausedChange,
     onRingDevice, onLockDevice, onToggleCharging, chargingStopped,
     onGoTo,
   } = props;
@@ -194,13 +204,46 @@ export function ConnectStep(props: ConnectStepProps) {
         </button>
       </div>
 
-      {/* Overview Tab */}
+      {/* Overview Tab - Full Width */}
       {connectTab === "overview" && (
-        <OverviewTab
-          serial={serial}
-          mirror={mirror}
-          directData={directData}
-        />
+        <div style={{ gridArea: "main", gridColumn: "1 / -1" }}>
+          <OverviewTab
+            serial={serial}
+            mirror={mirror}
+            directData={directData}
+            screenMirror={
+              <ScreenMirrorPanel
+                serial={serial}
+                shot={shot} shotTs={shotTs} shotDark={shotDark}
+                mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
+                liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
+                autoRefresh={autoRefresh}
+                mirror={mirror}
+                captures={captures} captureBusy={captureBusy}
+                autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
+                onCapture={onCapture}
+                onStartStream={onStartStream}
+                onStopStream={onStopStream}
+                onTakeScreenshot={onTakeScreenshot}
+                onStartAuto={onStartAuto}
+                onStopAuto={onStopAuto}
+                onIntervalChange={onIntervalChange}
+                onRefreshCaptures={onRefreshCaptures}
+                onDeleteCapture={onDeleteCapture}
+                onAutoRefreshChange={onAutoRefreshChange}
+                onStreamFpsChange={onStreamFpsChange}
+                onStreamModeChange={onStreamModeChange}
+                controlMode={controlMode}
+                onControlModeChange={onControlModeChange}
+                headlessActive={headlessActive}
+                headlessBusy={headlessBusy}
+                onToggleHeadless={onToggleHeadless}
+                paused={paused}
+                onPausedChange={onPausedChange}
+              />
+            }
+          />
+        </div>
       )}
 
       {/* System data acquisition */}
@@ -223,7 +266,7 @@ export function ConnectStep(props: ConnectStepProps) {
                 className="quick-action"
                 disabled={!serial || busy || cameraBusy}
                 onClick={onCapturePhoto}
-                style={{ background: cameraBusy ? "#f8e8e8" : "#fff5f5", borderColor: cameraBusy ? "#e88" : "#f5c6c6" }}
+                style={{ background: cameraBusy ? "rgba(239,68,68,0.15)" : "rgba(249,115,22,0.1)", borderColor: cameraBusy ? "rgba(239,68,68,0.3)" : "rgba(249,115,22,0.25)" }}
               >
                 <span className="qa-icon">📸</span>
                 <span className="qa-label">{cameraBusy ? "Capturing…" : "Camera"}</span>
@@ -243,7 +286,7 @@ export function ConnectStep(props: ConnectStepProps) {
                     }
                   } catch {}
                 }}
-                style={{ background: ringing ? "#fde8e8" : "#fff8f0", borderColor: ringing ? "#e88" : "#f0d4a8" }}
+                style={{ background: ringing ? "rgba(239,68,68,0.15)" : "rgba(249,115,22,0.1)", borderColor: ringing ? "rgba(239,68,68,0.3)" : "rgba(249,115,22,0.25)" }}
               >
                 <span className="qa-icon">{ringing ? "\u23F9" : "\uD83D\uDD14"}</span>
                 <span className="qa-label">{ringing ? "Stop Ringing" : "Ring Phone"}</span>
@@ -253,7 +296,7 @@ export function ConnectStep(props: ConnectStepProps) {
                 className="quick-action"
                 disabled={!serial || busy}
                 onClick={handleLockdown}
-                style={{ background: locked ? "#fde8e8" : "#f0f0ff", borderColor: locked ? "#e88" : "#c6c6f5" }}
+                style={{ background: locked ? "rgba(239,68,68,0.15)" : "rgba(99,102,241,0.1)", borderColor: locked ? "rgba(239,68,68,0.3)" : "rgba(99,102,241,0.25)" }}
               >
                 <span className="qa-icon">{locked ? "\uD83D\uDD13" : "\uD83D\uDD12"}</span>
                 <span className="qa-label">{locked ? "Unlock Device" : "Lock Device"}</span>
@@ -263,7 +306,7 @@ export function ConnectStep(props: ConnectStepProps) {
                 className="quick-action"
                 disabled={!directData}
                 onClick={onViewFull}
-                style={{ background: "#f0faf2", borderColor: "#b8e0c0" }}
+                style={{ background: "rgba(16,185,129,0.1)", borderColor: "rgba(16,185,129,0.25)" }}
               >
                 <span className="qa-icon">🔍</span>
                 <span className="qa-label">View All Data</span>
@@ -641,28 +684,38 @@ export function ConnectStep(props: ConnectStepProps) {
         </div>
       )}
 
-      {/* Screen mirror + captures */}
-      <ScreenMirrorPanel
-        serial={serial}
-        shot={shot} shotTs={shotTs} shotDark={shotDark}
-        mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
-        liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
-        autoRefresh={autoRefresh}
-        captures={captures} captureBusy={captureBusy}
-        autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
-        onCapture={onCapture}
-        onStartStream={onStartStream}
-        onStopStream={onStopStream}
-        onTakeScreenshot={onTakeScreenshot}
-        onStartAuto={onStartAuto}
-        onStopAuto={onStopAuto}
-        onIntervalChange={onIntervalChange}
-        onRefreshCaptures={onRefreshCaptures}
-        onDeleteCapture={onDeleteCapture}
-        onAutoRefreshChange={onAutoRefreshChange}
-        onStreamFpsChange={onStreamFpsChange}
-        onStreamModeChange={onStreamModeChange}
-      />
+      {/* Screen mirror + captures - only show when not on overview tab */}
+      {connectTab !== "overview" && (
+        <ScreenMirrorPanel
+          serial={serial}
+          shot={shot} shotTs={shotTs} shotDark={shotDark}
+          mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
+          liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
+          autoRefresh={autoRefresh}
+          mirror={mirror}
+          captures={captures} captureBusy={captureBusy}
+          autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
+          onCapture={onCapture}
+          onStartStream={onStartStream}
+          onStopStream={onStopStream}
+          onTakeScreenshot={onTakeScreenshot}
+          onStartAuto={onStartAuto}
+          onStopAuto={onStopAuto}
+          onIntervalChange={onIntervalChange}
+          onRefreshCaptures={onRefreshCaptures}
+          onDeleteCapture={onDeleteCapture}
+          onAutoRefreshChange={onAutoRefreshChange}
+          onStreamFpsChange={onStreamFpsChange}
+          onStreamModeChange={onStreamModeChange}
+          controlMode={controlMode}
+          onControlModeChange={onControlModeChange}
+          headlessActive={headlessActive}
+          headlessBusy={headlessBusy}
+          onToggleHeadless={onToggleHeadless}
+          paused={paused}
+          onPausedChange={onPausedChange}
+        />
+      )}
     </section>
   );
 }

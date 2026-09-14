@@ -1,6 +1,6 @@
 import { BrowserForensicsPanel } from "./BrowserForensicsPanel";
 
-type Step = "connect" | "apps" | "scan" | "media" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
 
 interface BrowserForensicsStepProps {
   serial: string;

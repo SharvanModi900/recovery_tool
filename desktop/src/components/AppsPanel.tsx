@@ -6,9 +6,10 @@ interface AppsPanelProps {
   onDetect: () => void;
   onExtract: (appId: string) => void;
   loading?: boolean;
+  extractedIds?: Set<string>;
 }
 
-export function AppsPanel({ inventory, onDetect, onExtract, loading }: AppsPanelProps) {
+export function AppsPanel({ inventory, onDetect, onExtract, loading, extractedIds }: AppsPanelProps) {
   const [selectedApp, setSelectedApp] = useState<string | null>(null);
 
   if (!inventory) {
@@ -60,6 +61,8 @@ export function AppsPanel({ inventory, onDetect, onExtract, loading }: AppsPanel
             isSelected={selectedApp === app.id}
             onSelect={() => setSelectedApp(selectedApp === app.id ? null : app.id)}
             onExtract={() => onExtract(app.id)}
+            isExtracted={extractedIds?.has(app.id) ?? false}
+            isExtracting={(loading ?? false) && !extractedIds?.has(app.id)}
           />
         ))}
       </div>
@@ -89,11 +92,13 @@ export function AppsPanel({ inventory, onDetect, onExtract, loading }: AppsPanel
   );
 }
 
-function AppCard({ app, isSelected, onSelect, onExtract }: {
+function AppCard({ app, isSelected, onSelect, onExtract, isExtracted, isExtracting }: {
   app: AppDetection;
   isSelected: boolean;
   onSelect: () => void;
   onExtract: () => void;
+  isExtracted: boolean;
+  isExtracting: boolean;
 }) {
   return (
     <div
@@ -137,9 +142,16 @@ function AppCard({ app, isSelected, onSelect, onExtract }: {
         <button
           className="mini"
           onClick={(e) => { e.stopPropagation(); onExtract(); }}
-          style={{ width: "100%", marginTop: 4 }}
+          disabled={isExtracting}
+          style={{
+            width: "100%",
+            marginTop: 4,
+            background: isExtracted ? "var(--success, #10b981)" : undefined,
+            color: isExtracted ? "#fff" : undefined,
+            border: isExtracted ? "1px solid var(--success, #10b981)" : undefined,
+          }}
         >
-          🔍 Extract Data
+          {isExtracting ? "⏳ Extracting…" : isExtracted ? "✅ Extracted — Re-extract" : "🔍 Extract Data"}
         </button>
       )}
     </div>

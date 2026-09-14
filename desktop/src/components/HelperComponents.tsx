@@ -193,12 +193,13 @@ export function WaEvidence({ res }: { res: UiRecovery }) {
 const ROW_H = 26;
 
 export function AppTable({
-  apps, serial, sel, onOpen,
+  apps, serial, sel, onOpen, runningPkg,
 }: {
   apps: AppInfo[];
   serial: string;
   sel: string;
   onOpen: (a: AppInfo) => void;
+  runningPkg?: string | null;
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(400);
@@ -233,9 +234,24 @@ export function AppTable({
           <tbody><tr style={{ height: start * ROW_H }}><td colSpan={7} /></tr></tbody>
         )}
         <tbody>
-          {apps.slice(start, end).map((a) => (
-            <tr key={a.package} style={{ height: ROW_H }} className={sel === a.package ? "sel" : ""} onClick={() => onOpen(a)}>
-              <td><AppIcon pkg={a.package} serial={serial} /></td>
+          {apps.slice(start, end).map((a) => {
+            const isRunning = runningPkg && a.package === runningPkg;
+            const rowClass = sel === a.package ? "sel" : "";
+            return (
+              <tr
+                key={a.package}
+                style={{
+                  height: ROW_H,
+                  background: isRunning ? "rgba(34,197,94,0.15)" : undefined,
+                  borderLeft: isRunning ? "3px solid var(--ok, #22c55e)" : undefined,
+                }}
+                className={rowClass}
+                onClick={() => onOpen(a)}
+              >
+                <td>
+                  {isRunning && <span style={{ color: "var(--ok, #22c55e)", fontSize: 8, marginRight: 2 }}>●</span>}
+                  <AppIcon pkg={a.package} serial={serial} />
+                </td>
               <td className="mono small">{a.package}</td>
               <td className="small nowrap">{a.version_name ?? "…"}</td>
               <td className="small nowrap">{a.first_install || "…"}</td>
@@ -243,7 +259,8 @@ export function AppTable({
               <td className="small">{a.system ? "system" : "user"}</td>
               <td>{appTag(a.package) && <span className="pill kind-media">{appTag(a.package)}</span>}</td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
         {end < apps.length && (
           <tbody><tr style={{ height: (apps.length - end) * ROW_H }}><td colSpan={7} /></tr></tbody>
