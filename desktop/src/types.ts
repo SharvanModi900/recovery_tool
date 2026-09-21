@@ -8,6 +8,21 @@ export interface Device {
   android_version: string | null;
 }
 
+export interface FastbootDevice {
+  serial: string;
+  mode: string;
+  product: string | null;
+  model: string | null;
+  secure: string | null;
+  unlocked: string | null;
+  battery: string | null;
+}
+
+export interface PartitionInfo {
+  name: string;
+  size: number;
+}
+
 export interface DeviceFullInfo {
   // Identity
   manufacturer: string;
@@ -237,15 +252,27 @@ export interface CallRecording {
   matched_timestamp: number | null;
 }
 
-/** WhatsApp media file from device storage. */
+/** Confidence level for media-to-contact attribution. */
+export type AttributionConfidence = "high" | "medium" | "low" | "none";
+
+/** WhatsApp media file with forensic attribution metadata. */
 export interface WhatsAppMedia {
   path: string;
   filename: string;
   size: number;
   media_type: string;
   source_folder: string;
-  contact?: string;
+  timestamp: number;
   source: string;
+  // Attribution fields
+  contact?: string;
+  contact_name?: string;
+  chat_jid?: string;
+  whatsapp_message_id?: number;
+  message_timestamp?: number;
+  source_database?: string;
+  evidence: string[];
+  confidence: AttributionConfidence;
 }
 
 /** WhatsApp chat entry. */
@@ -862,4 +889,34 @@ export function fmtTime(ms: number | null): string {
   const d = new Date(ms);
   if (isNaN(d.getTime())) return String(ms);
   return d.toLocaleString();
+}
+
+// ── Remote Agent Types ──
+
+export type RemoteAgentStatus = "running" | "stopped" | { error: string };
+
+export interface ReceivedPackage {
+  id: string;
+  device_id: string;
+  device_model: string | null;
+  android_version: string | null;
+  timestamp: number;
+  received_at: number;
+  contacts_count: number;
+  calls_count: number;
+  sms_count: number;
+  bookmarks_count: number;
+  wifi_count: number;
+  bluetooth_count: number;
+  apps_count: number;
+  media_count: number;
+  local_path: string;
+  notes: string[];
+}
+
+export interface RemoteAgentState {
+  status: RemoteAgentStatus;
+  port: number;
+  packages: ReceivedPackage[];
+  storage_dir: string;
 }

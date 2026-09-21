@@ -257,6 +257,33 @@ impl AdbClient {
         Ok(())
     }
 
+    /// Set up ADB port forwarding (host command, not device command).
+    /// Maps a local TCP port to a remote abstract socket on the device.
+    pub fn forward(&self, serial: &str, local: &str, remote: &str) -> Result<()> {
+        let args: Vec<String> = vec![
+            "-s".into(),
+            serial.into(),
+            "forward".into(),
+            local.into(),
+            remote.into(),
+        ];
+        self.run(&args, QUERY_TIMEOUT)?;
+        Ok(())
+    }
+
+    /// Remove an ADB port forwarding rule.
+    pub fn forward_remove(&self, serial: &str, local: &str) -> Result<()> {
+        let args: Vec<String> = vec![
+            "-s".into(),
+            serial.into(),
+            "forward".into(),
+            "--remove".into(),
+            local.into(),
+        ];
+        self.run(&args, QUERY_TIMEOUT)?;
+        Ok(())
+    }
+
     /// Run a shell command on the device (may modify device state).
     pub fn shell(&self, serial: &str, cmd: &[&str]) -> Result<Vec<u8>> {
         let mut args: Vec<String> = vec!["-s".into(), serial.into(), "shell".into()];

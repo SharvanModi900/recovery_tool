@@ -1,7 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppInfo, Device, DeviceMirror, DeviceFullInfo, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent, CallRecording, ScreenCapture, SimSnapshot, SimSwapReport, Case, CaseSummary, EvidenceItem, AuditEntry, ChainStatus, TimelinePage, WifiNetwork, BluetoothDevice, DeviceAccount, PowerEvent, NotificationEntry, DictionaryWord, DeletedSmsResult, ThumbnailRecoveryResult, CarveResult, BrowserForensicsResult, LocationForensicsResult, NetworkForensicsResult, ApkAnalysisResult, UnifiedEvent, SourceReport, CameraCaptureResult, MicCaptureResult } from "./types";
+import type { AppInfo, Device, DeviceMirror, DeviceFullInfo, IconInfo, ScanReport, DecryptOutcome, MediaInspect, MediaRecovery, ScreenshotInfo, UiRecovery, DirectAcquisition, AppInventory, InstagramData, MessengerData, TelegramData, ForensicExtraction, WhatsAppDeepResult, RootCheckResult, CallEvent, CallRecording, ScreenCapture, SimSnapshot, SimSwapReport, Case, CaseSummary, EvidenceItem, AuditEntry, ChainStatus, TimelinePage, WifiNetwork, BluetoothDevice, DeviceAccount, PowerEvent, NotificationEntry, DictionaryWord, DeletedSmsResult, ThumbnailRecoveryResult, CarveResult, BrowserForensicsResult, LocationForensicsResult, NetworkForensicsResult, ApkAnalysisResult, UnifiedEvent, SourceReport, CameraCaptureResult, MicCaptureResult, FastbootDevice, PartitionInfo, RemoteAgentState } from "./types";
 
 export const listDevices = () => invoke<Device[]>("list_devices");
+
+// ── Fastboot (bootloader mode — no USB debugging required) ──
+export const listFastbootDevices = () => invoke<FastbootDevice[]>("list_fastboot_devices");
+export const fastbootGetvarAll = (serial: string) => invoke<[string, string][]>("fastboot_getvar_all", { serial });
+export const fastbootListPartitions = (serial: string) => invoke<PartitionInfo[]>("fastboot_list_partitions", { serial });
+export const fastbootReadPartition = (serial: string, partition: string) => invoke<string>("fastboot_read_partition", { serial, partition });
+export const fastbootBootImage = (serial: string, imagePath: string) => invoke<string>("fastboot_boot_image", { serial, imagePath });
+export const fastbootReboot = (serial: string, mode: string) => invoke<string>("fastboot_reboot", { serial, mode });
+export const rebootToBootloader = (serial: string) => invoke<string>("reboot_to_bootloader", { serial });
 
 export const scanFolder = (path: string) => invoke<ScanReport>("scan_folder", { path });
 
@@ -310,6 +319,14 @@ export const deviceRotate = (serial: string, rotation: number) =>
 export const deviceAutoRotate = (serial: string) =>
   invoke<string>("device_auto_rotate", { serial });
 
+/** Freeze device: disable ALL touch input. Phone becomes fully read-only. */
+export const deviceFreeze = (serial: string) =>
+  invoke<string>("device_freeze", { serial });
+
+/** Unfreeze device: restore normal touch input and navigation. */
+export const deviceUnfreeze = (serial: string) =>
+  invoke<string>("device_unfreeze", { serial });
+
 /** Change device display density (zoom level). Higher DPI = bigger UI elements. */
 export const deviceZoom = (serial: string, density: number) =>
   invoke<string>("device_zoom", { serial, density });
@@ -610,3 +627,16 @@ export const checkVerifiedBoot = (serial: string) =>
 // ── #46 Kernel Exploit Detector ──
 export const detectKernelExploits = (serial: string) =>
   invoke<string>("detect_kernel_exploits", { serial });
+
+// ── Remote Agent Receiver ──
+export const remoteAgentStart = (port?: number, storageDir?: string) =>
+  invoke<RemoteAgentState>("remote_agent_start", { port: port ?? null, storageDir: storageDir ?? null });
+
+export const remoteAgentStop = () =>
+  invoke<RemoteAgentState>("remote_agent_stop");
+
+export const remoteAgentStatus = (storageDir?: string) =>
+  invoke<RemoteAgentState>("remote_agent_status", { storageDir: storageDir ?? null });
+
+export const remoteAgentExport = (packagePath: string, workspaceDir?: string) =>
+  invoke<string>("remote_agent_export", { packagePath, workspaceDir: workspaceDir ?? null });

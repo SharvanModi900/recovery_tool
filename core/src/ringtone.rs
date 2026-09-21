@@ -53,6 +53,17 @@ const OVERLAY_DEX: &str = "/data/local/tmp/recoverkit_overlay.dex";
 /// ScreenOverlay main class.
 const OVERLAY_CLASS: &str = "com.recoverkit.audio.ScreenOverlay";
 
+/// Pre-compiled DEX containing DeviceFreezer — disables touch dispatch pipeline.
+static DEVICE_FREEZER_DEX: &[u8] = include_bytes!(
+    "../assets/ringtone-helper/dex_freeze/classes.dex"
+);
+
+/// Device path for the DeviceFreezer DEX.
+const FREEZER_DEX: &str = "/data/local/tmp/recoverkit_freezer.dex";
+
+/// DeviceFreezer main class.
+const FREEZER_CLASS: &str = "com.recoverkit.audio.DeviceFreezer";
+
 /// Generate a PCM WAV file (16-bit mono) containing a sine-wave tone.
 fn generate_wav(freq: f32, duration: f32, sample_rate: u32) -> Vec<u8> {
     let num_samples = (sample_rate as f32 * duration) as u32;
@@ -444,6 +455,232 @@ pub fn unlock_device(adb: &AdbClient, serial: &str) {
     let _ = adb.shell(serial, &["rm", "-f", DEVICE_DEX, RESTRICTOR_DEX, OVERLAY_DEX, UNLOCK_SIGNAL, LOCK_PID_FILE]);
 
     eprintln!("[LOCKDOWN] Device unlocked");
+}
+
+/// Mirror-safe lockdown: full device freeze but keeps display ON for screen mirror.
+/// Uses a UNIQUE multi-layer approach:
+///   Layer 1: Restrict SystemUI itself via appops (can't process gestures)
+///   Layer 2: Direct service call to disable notification shade
+///   Layer 3: send-disable-flag (verified on Android 15)
+///   Layer 4: Immersive mode + nav key disable
+///   Layer 5: Multiple collapse passes with delays
+/// NO POWER key, NO goToSleep — screen stays ON for mirror.
+pub fn lock_device_mirror_safe(adb: &AdbClient, serial: &str) {
+    eprintln!("[FREEZE] Mirror-safe lockdown starting...");
+
+    // 1. Push DEX files
+    let local_dex = std::env::temp_dir().join("recoverkit_silent.dex");
+    let _ = std::fs::write(&local_dex, SILENT_PLAYER_DEX);
+    let _ = adb.push(serial, &local_dex, DEVICE_DEX);
+
+    let local_restrict = std::env::temp_dir().join("recoverkit_restrictor.dex");
+    let _ = std::fs::write(&local_restrict, APP_RESTRICTOR_DEX);
+    let _ = adb.push(serial, &local_restrict, RESTRICTOR_DEX);
+
+    let local_overlay = std::env::temp_dir().join("recoverkit_overlay.dex");
+    let _ = std::fs::write(&local_overlay, SCREEN_OVERLAY_DEX);
+    let _ = adb.push(serial, &local_overlay, OVERLAY_DEX);
+
+    // Push DeviceFreezer DEX (disables touch dispatch pipeline)
+    let local_freezer = std::env::temp_dir().join("recoverkit_freezer.dex");
+    let _ = std::fs::write(&local_freezer, DEVICE_FREEZER_DEX);
+    let _ = adb.push(serial, &local_freezer, FREEZER_DEX);
+    eprintln!("[FREEZE] Pushed DEX files (incl. DeviceFreezer {} bytes)", DEVICE_FREEZER_DEX.len());
+
+    // 2. Clean up stale files
+    let _ = adb.shell(serial, &["rm", "-f", UNLOCK_SIGNAL, LOCK_PID_FILE]);
+    let _ = adb.shell(serial, &["rm", "-f", "/data/local/tmp/recoverkit_freezer_debug.log"]);
+
+    // 3. PRIMARY: Start DeviceFreezer DAEMON with nohup (prevents SIGHUP death)
+    //    Runs in BACKGROUND — stays alive, re-applies setEventDispatchDisabled(true)
+    //    every 2 seconds. Android tries to re-enable — daemon fights back.
+    eprintln!("[FREEZE] Starting DeviceFreezer daemon (persistent touch block)...");
+    let cmd = format!(
+        "nohup sh -c 'CLASSPATH={} app_process / {} freeze' > /data/local/tmp/recoverkit_freezer.log 2>&1 &",
+        FREEZER_DEX, FREEZER_CLASS
+    );
+    let _ = adb.shell(serial, &[&cmd]);
+    // Give daemon time to start and apply initial disable
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // 3b. Verify daemon is running and check debug log
+    if let Ok(log_out) = adb.shell(serial, &["cat", "/data/local/tmp/recoverkit_freezer_debug.log"]) {
+        let log_text = String::from_utf8_lossy(&log_out);
+        eprintln!("[FREEZE] Daemon log: {}", log_text.trim());
+    }
+    if let Ok(pid_out) = adb.shell(serial, &["cat", "/data/local/tmp/recoverkit_freezer.pid"]) {
+        let pid_text = String::from_utf8_lossy(&pid_out).trim().to_string();
+        eprintln!("[FREEZE] Daemon PID: {}", pid_text);
+        // Verify process is alive
+        let _ = adb.shell(serial, &["kill", "-0", &pid_text]);
+    }
+
+    // 4. Start AppRestrictor daemon (blocks ALL app launches)
+    eprintln!("[FREEZE] Starting AppRestrictor daemon...");
+    let cmd = format!(
+        "CLASSPATH={} app_process / {} restrict > /data/local/tmp/recoverkit_restrict.log 2>&1 &",
+        RESTRICTOR_DEX, RESTRICTOR_CLASS
+    );
+    let _ = adb.shell(serial, &[&cmd]);
+
+    // 4. Try fullscreen overlay (best-effort on Android 15)
+    let cmd = format!(
+        "CLASSPATH={} app_process / {} show > /data/local/tmp/recoverkit_overlay.log 2>&1 &",
+        OVERLAY_DEX, OVERLAY_CLASS
+    );
+    let _ = adb.shell(serial, &[&cmd]);
+
+    // 5. Keep screen ON via USB (mirror keeps working)
+    let _ = adb.shell(serial, &["svc", "power", "stayon", "usb"]);
+
+    // 6. Disable secondary launchers
+    eprintln!("[FREEZE] Disabling secondary launchers...");
+    for pkg in SECONDARY_LAUNCHERS {
+        let _ = adb.shell(serial, &["pm", "disable-user", "--user", "0", pkg]);
+    }
+
+    // 7. Restrict primary launcher via appops
+    let _ = adb.shell(serial, &["appops", "set", PRIMARY_LAUNCHER, "RUN_IN_BACKGROUND", "ignore"]);
+    let _ = adb.shell(serial, &["appops", "set", PRIMARY_LAUNCHER, "WAKE_LOCK", "ignore"]);
+
+    // 8. Force-stop all launchers
+    let _ = adb.shell(serial, &["am", "force-stop", PRIMARY_LAUNCHER]);
+    for pkg in SECONDARY_LAUNCHERS {
+        let _ = adb.shell(serial, &["am", "force-stop", pkg]);
+    }
+
+    // === UNIQUE APPROACH: Restrict SystemUI itself ===
+
+    // 9. Restrict SystemUI via appops — prevents it from processing gestures
+    eprintln!("[FREEZE] Restricting SystemUI permissions via appops...");
+    let _ = adb.shell(serial, &["appops", "set", "com.android.systemui", "RUN_IN_BACKGROUND", "ignore"]);
+    let _ = adb.shell(serial, &["appops", "set", "com.android.systemui", "WAKE_LOCK", "ignore"]);
+
+    // 10. Switch to 3-button nav (removes gesture handle)
+    let _ = adb.shell(serial, &["settings", "put", "secure", "navigation_mode", "2"]);
+    // Generous delay — SystemUI must fully reconfigure
+    std::thread::sleep(std::time::Duration::from_secs(2));
+
+    // 11. First pass: disable ALL nav buttons + status bar (verified on Android 15)
+    let _ = adb.shell(serial, &[
+        "cmd", "statusbar", "send-disable-flag",
+        "home", "recents", "statusbar-expansion",
+        "system-icons", "notification-peek",
+        "clock", "notification-icons", "search",
+    ]);
+
+    // 12. Force-collapse the shade immediately
+    let _ = adb.shell(serial, &["cmd", "statusbar", "collapse"]);
+
+    // 13. Disable heads-up notifications (prevents shade from popping open)
+    let _ = adb.shell(serial, &["settings", "put", "global", "heads_up_notifications_enabled", "0"]);
+
+    // 14. Immersive mode (hides bars visually)
+    let _ = adb.shell(serial, &["settings", "put", "global", "policy_control",
+        "immersive.navigation=*,immersive.status=*"]);
+
+    // 15. Disable navigation keys
+    let _ = adb.shell(serial, &["settings", "put", "secure", "navigation_bar_key_disabled", "1"]);
+
+    // 16. Wait then RE-APPLY flags (SystemUI may override during transition)
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    eprintln!("[FREEZE] Re-applying disable flags (second pass)...");
+    let _ = adb.shell(serial, &[
+        "cmd", "statusbar", "send-disable-flag",
+        "home", "recents", "statusbar-expansion",
+        "system-icons", "notification-peek",
+        "clock", "notification-icons", "search",
+    ]);
+    let _ = adb.shell(serial, &["cmd", "statusbar", "collapse"]);
+
+    // 17. Kill all animations (screen appears frozen)
+    let _ = adb.shell(serial, &["settings", "put", "global", "window_animation_scale", "0"]);
+    let _ = adb.shell(serial, &["settings", "put", "global", "transition_animation_scale", "0"]);
+    let _ = adb.shell(serial, &["settings", "put", "global", "animator_duration_scale", "0"]);
+
+    // 18. Disable touch feedback
+    let _ = adb.shell(serial, &["settings", "put", "system", "show_touches", "0"]);
+    let _ = adb.shell(serial, &["settings", "put", "system", "haptic_feedback_enabled", "0"]);
+
+    eprintln!("[FREEZE] Mirror-safe lockdown complete — display stays ON");
+}
+
+/// Release mirror-safe lockdown — restore device to normal.
+pub fn unlock_device_mirror_safe(adb: &AdbClient, serial: &str) {
+    eprintln!("[FREEZE] Releasing mirror-safe lockdown...");
+
+    // 1. Re-enable apps via AppRestrictor
+    let cmd = format!(
+        "CLASSPATH={} app_process / {} restore",
+        RESTRICTOR_DEX, RESTRICTOR_CLASS
+    );
+    let _ = adb.shell(serial, &[&cmd]);
+
+    // 2. Signal lock processes to exit
+    let cmd = format!(
+        "CLASSPATH={} app_process / {} unlock",
+        DEVICE_DEX, LOCKER_CLASS
+    );
+    let _ = adb.shell(serial, &[&cmd]);
+
+    // 2b. Re-enable touch dispatch — create signal file so daemon exits,
+    //     then run unfreeze command for immediate re-enable
+    eprintln!("[FREEZE] Signaling DeviceFreezer daemon to stop...");
+    let _ = adb.shell(serial, &["touch", "/data/local/tmp/recoverkit_unlock_signal"]);
+    // Run unfreeze (creates signal + direct binder transact to re-enable + kills daemon)
+    let cmd = format!(
+        "CLASSPATH={} app_process / {} unfreeze",
+        FREEZER_DEX, FREEZER_CLASS
+    );
+    let _ = adb.shell(serial, &[&cmd]);
+    // Wait for daemon to process the signal
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // 3. Restore stay-on
+    let _ = adb.shell(serial, &["svc", "power", "stayon", "none"]);
+
+    // 4. Re-enable launchers
+    for pkg in SECONDARY_LAUNCHERS {
+        let _ = adb.shell(serial, &["pm", "enable", pkg]);
+    }
+
+    // 5. Restore primary launcher appops
+    let _ = adb.shell(serial, &["appops", "set", PRIMARY_LAUNCHER, "RUN_IN_BACKGROUND", "allow"]);
+    let _ = adb.shell(serial, &["appops", "set", PRIMARY_LAUNCHER, "WAKE_LOCK", "allow"]);
+
+    // 6. Restore SystemUI appops (re-enable gesture processing)
+    eprintln!("[FREEZE] Restoring SystemUI permissions...");
+    let _ = adb.shell(serial, &["appops", "set", "com.android.systemui", "RUN_IN_BACKGROUND", "allow"]);
+    let _ = adb.shell(serial, &["appops", "set", "com.android.systemui", "WAKE_LOCK", "allow"]);
+
+    // 7. Clear status bar disable flags
+    let _ = adb.shell(serial, &["cmd", "statusbar", "send-disable-flag", "none"]);
+
+    // 8. Clear immersive mode
+    let _ = adb.shell(serial, &["settings", "put", "global", "policy_control", "null"]);
+
+    // 9. Re-enable navigation keys
+    let _ = adb.shell(serial, &["settings", "put", "secure", "navigation_bar_key_disabled", "0"]);
+
+    // 10. Re-enable heads-up notifications
+    let _ = adb.shell(serial, &["settings", "put", "global", "heads_up_notifications_enabled", "1"]);
+
+    // 11. Restore gesture navigation
+    let _ = adb.shell(serial, &["settings", "put", "secure", "navigation_mode", "0"]);
+
+    // 12. Restore animations
+    let _ = adb.shell(serial, &["settings", "put", "global", "window_animation_scale", "1"]);
+    let _ = adb.shell(serial, &["settings", "put", "global", "transition_animation_scale", "1"]);
+    let _ = adb.shell(serial, &["settings", "put", "global", "animator_duration_scale", "1"]);
+
+    // 13. Restore touch feedback
+    let _ = adb.shell(serial, &["settings", "put", "system", "show_touches", "1"]);
+    let _ = adb.shell(serial, &["settings", "put", "system", "haptic_feedback_enabled", "1"]);
+
+    // 14. Clean up DEX and temp files
+    let _ = adb.shell(serial, &["rm", "-f", DEVICE_DEX, RESTRICTOR_DEX, OVERLAY_DEX, FREEZER_DEX, UNLOCK_SIGNAL, LOCK_PID_FILE]);
+
+    eprintln!("[FREEZE] Mirror-safe lockdown released");
 }
 
 /// Get the temp path where the ringtone WAV is staged before push.

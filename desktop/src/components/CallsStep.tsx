@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { CallEvent, CallRecording, CallLog, WhatsAppCall } from "../types";
 import { fmtTime } from "../types";
 
-type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 interface CallsStepProps {
   serial: string;
@@ -98,6 +98,7 @@ export function CallsStep({ serial, callEvents, callRecordings, directData, call
               <div className="fx-empty">
                 <span className="fx-empty-icon">📋</span>
                 <span className="fx-empty-text">No call logs — run direct acquisition from Overview to populate</span>
+                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
               </div>
             ) : (
               <div className="fx-scroll">
@@ -148,6 +149,7 @@ export function CallsStep({ serial, callEvents, callRecordings, directData, call
               <div className="fx-empty">
                 <span className="fx-empty-icon">📡</span>
                 <span className="fx-empty-text">{callMonitorActive ? "Monitoring active — waiting for call events…" : "Call monitor not active — start it from Overview → Calls tab"}</span>
+                {!callMonitorActive && <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>}
               </div>
             ) : (
               <div className="fx-scroll fx-list">
@@ -171,6 +173,7 @@ export function CallsStep({ serial, callEvents, callRecordings, directData, call
               <div className="fx-empty">
                 <span className="fx-empty-icon">📞</span>
                 <span className="fx-empty-text">No WhatsApp call records — run direct acquisition from Overview</span>
+                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
               </div>
             ) : (
               <div className="fx-scroll">

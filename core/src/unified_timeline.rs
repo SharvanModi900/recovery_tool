@@ -5,6 +5,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Truncate a string to at most `max` bytes, never splitting a UTF-8 character.
+fn truncate_safe(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    // Find the first character whose end would exceed max, truncate before it
+    for (idx, ch) in s.char_indices() {
+        if idx + ch.len_utf8() > max {
+            return &s[..idx];
+        }
+    }
+    s
+}
+
 /// Category of a unified timeline event.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -75,7 +89,7 @@ pub fn build_unified_timeline(input: &TimelineInput, serial: Option<&str>) -> Ve
             timestamp: *ts,
             category: EventCategory::Sms,
             title: if *deleted { "Deleted SMS".into() } else { "SMS".into() },
-            detail: Some(format!("{address}: {}", if body.len() > 80 { &body[..80] } else { body })),
+            detail: Some(format!("{address}: {}", truncate_safe(body, 80))),
             source_app: Some("Messages".into()),
             device_serial: dev.clone(),
             is_deleted: *deleted,
@@ -88,7 +102,7 @@ pub fn build_unified_timeline(input: &TimelineInput, serial: Option<&str>) -> Ve
             timestamp: *ts,
             category: EventCategory::Whatsapp,
             title: if *from_me { "WA sent".into() } else { "WA received".into() },
-            detail: Some(format!("{jid}: {}", if text.len() > 80 { &text[..80] } else { text })),
+            detail: Some(format!("{jid}: {}", truncate_safe(text, 80))),
             source_app: Some("WhatsApp".into()),
             device_serial: dev.clone(),
             is_deleted: false,

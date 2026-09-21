@@ -7,9 +7,10 @@ interface OverviewTabProps {
   mirror: DeviceMirror | null;
   directData: DirectAcquisition | null;
   screenMirror?: ReactNode;
+  onGoTo?: (step: string) => void;
 }
 
-export function OverviewTab({ serial, mirror, directData, screenMirror }: OverviewTabProps) {
+export function OverviewTab({ serial, mirror, directData, screenMirror, onGoTo }: OverviewTabProps) {
   const [fullInfo, setFullInfo] = useState<DeviceFullInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -145,24 +146,12 @@ export function OverviewTab({ serial, mirror, directData, screenMirror }: Overvi
 
         {/* Action Buttons */}
         <div className="flex gap-2 items-center">
-          <button className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white text-sm font-semibold rounded-lg transition">
-            📥 Acquire Evidence
-          </button>
-          <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm border border-slate-700 rounded-lg transition">
-            🔒 Lock Device
-          </button>
-          <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm border border-slate-700 rounded-lg transition">
-            🔔 Ring
-          </button>
-          <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm border border-slate-700 rounded-lg transition">
-            ⚡ Stop Charging
+          <button className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-sm border border-slate-700 rounded-lg transition" onClick={() => onGoTo?.("device_tools")}>
+            🛠 Device Tools
           </button>
           <div className="flex-1"></div>
-          <button className="px-4 py-2 text-slate-400 hover:text-white text-sm border border-slate-700 rounded-lg transition hover:bg-slate-800">
+          <button className="px-4 py-2 text-slate-400 hover:text-white text-sm border border-slate-700 rounded-lg transition hover:bg-slate-800" onClick={() => onGoTo?.("device_tools")}>
             ℹ️ Full Device Details
-          </button>
-          <button className="w-9 h-9 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg transition flex items-center justify-center text-slate-400">
-            ⋯
           </button>
         </div>
 

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { UiRecovery, DirectAcquisition } from "../types";
 
-type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 interface ContactsStepProps {
   serial: string;
@@ -107,6 +107,7 @@ export function ContactsStep({ serial, recovery, directData, onGoTo }: ContactsS
               <div className="fx-empty">
                 <span className="fx-empty-icon">📱</span>
                 <span className="fx-empty-text">No device contacts — run direct acquisition from Overview → System Data</span>
+                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
               </div>
             ) : (
               <div className="fx-scroll">
@@ -134,6 +135,7 @@ export function ContactsStep({ serial, recovery, directData, onGoTo }: ContactsS
               <div className="fx-empty">
                 <span className="fx-empty-icon">💬</span>
                 <span className="fx-empty-text">No WhatsApp contacts — run direct acquisition or deep extraction from Overview</span>
+                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
               </div>
             ) : (
               <div className="fx-scroll">

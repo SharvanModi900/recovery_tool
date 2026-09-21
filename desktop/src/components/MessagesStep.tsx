@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { UiRecovery, WhatsAppDeepResult, DirectAcquisition } from "../types";
 import { fmtTime } from "../types";
 
-type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 interface MessagesStepProps {
   serial: string;
@@ -88,6 +88,7 @@ export function MessagesStep({ serial, waDeepResult, recovery, directData, onGoT
               <div className="fx-empty">
                 <span className="fx-empty-icon">💬</span>
                 <span className="fx-empty-text">No WhatsApp chats found — run WhatsApp deep extraction from Overview to populate this view</span>
+                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
               </div>
             ) : (
               <div className="fx-scroll">
@@ -112,6 +113,7 @@ export function MessagesStep({ serial, waDeepResult, recovery, directData, onGoT
               <div className="fx-empty">
                 <span className="fx-empty-icon">📞</span>
                 <span className="fx-empty-text">No WhatsApp call records — run direct acquisition from Overview to populate</span>
+                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
               </div>
             ) : (
               <div className="fx-scroll">
@@ -159,7 +161,7 @@ export function MessagesStep({ serial, waDeepResult, recovery, directData, onGoT
 
         <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
           <button className="mini" onClick={() => onGoTo("media")}>← Media</button>
-          <button className="mini" onClick={() => onGoTo("deleted")}>Deleted Data →</button>
+          <button className="mini" onClick={() => onGoTo("forensics")}>Forensics →</button>
         </div>
       </div>
     </section>

@@ -5,7 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
 import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult, InstagramData, MessengerData, TelegramData, ForensicExtraction } from "./types";
 import { fmtSize } from "./types";
-import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, DeepForensicsStep, MessagesStep, CallsStep, ContactsStep, SimForensicsStep, ArtifactsStep, DeletedDataStep, BrowserForensicsStep, NetworkLocationStep, DebugConsole, DeviceDetailsPanel, StandaloneTimeline, OverviewTab, ScreenMirrorPanel, ToolsPanel, DeletedPhotoGallery } from "./components";
+import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, ForensicsStep, DeviceToolsStep, MessagesStep, CallsStep, ContactsStep, SimForensicsStep, DebugConsole, StandaloneTimeline, ScreenMirrorPanel, DeletedPhotoGallery } from "./components";
 import { useDeviceMirror } from "./hooks/useDeviceMirror";
 import { useCallMonitor } from "./hooks/useCallMonitor";
 import { useSimForensics } from "./hooks/useSimForensics";
@@ -103,13 +103,11 @@ const createEmptySession = (serial: string, model: string = ""): DeviceSession =
   exportBusy: false,
 });
 
-type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 export default function App() {
   const [step, setStep] = useState<Step>("connect");
   const [debugOpen, setDebugOpen] = useState(false);
-  const [deviceDetailsOpen, setDeviceDetailsOpen] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
   const [galleryOpen, setGalleryOpen] = useState(false);
 
   // Multi-device session management
@@ -219,11 +217,8 @@ export default function App() {
   const [directBusy, setDirectBusy] = useState(false);
   const [cameraBusy, setCameraBusy] = useState(false);
   const [cameraStatus, setCameraStatus] = useState<string>("");
-  const [micBusy, setMicBusy] = useState(false);
-  const [micStatus, setMicStatus] = useState<string>("");
-  const [micDuration, setMicDuration] = useState<number>(5);
   const [directView, setDirectView] = useState<"summary" | "full">("summary");
-  const [connectTab, setConnectTab] = useState<"overview" | "data" | "whatsapp" | "calls" | "sim">("overview");
+  const [connectTab, setConnectTab] = useState<"overview" | "data" | "whatsapp" | "calls" | "remote">("overview");
   const [chargingStopped, setChargingStopped] = useState(false);
   const [waDeepResult, setWaDeepResult] = useState<WhatsAppDeepResult | null>(null);
   const [waDeepBusy, setWaDeepBusy] = useState(false);
@@ -508,27 +503,6 @@ export default function App() {
       .finally(() => {
         setCameraBusy(false);
         setTimeout(() => setCameraStatus(""), 10000);
-      });
-  };
-
-  const doCaptureMic = () => {
-    setMicBusy(true);
-    setMicStatus(`🎤 Recording ${micDuration} seconds from device mic...`);
-    api.captureDeviceMic(serial, micDuration)
-      .then((result) => {
-        if (result.success && result.local_path) {
-          setMicStatus(`🎤 Audio captured! File: ${result.filename}, Size: ${fmtSize(result.size)}, Duration: ${result.duration}s`);
-          setStatus(`Audio captured — ${result.filename} (${fmtSize(result.size)}, ${result.duration}s) saved to ${result.local_path}`);
-        } else {
-          setMicStatus(`❌ No audio captured. ${result.notes.join(" | ")}`);
-        }
-      })
-      .catch((err) => {
-        setMicStatus(`❌ Error: ${err}`);
-      })
-      .finally(() => {
-        setMicBusy(false);
-        setTimeout(() => setMicStatus(""), 10000);
       });
   };
 
@@ -1029,42 +1003,11 @@ export default function App() {
               <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
             </svg>
           </button>
-          <div className="search-box">
-            <svg className="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="11" cy="11" r="8"/>
-              <path d="M21 21l-4.35-4.35"/>
-            </svg>
-            <input type="text" placeholder="Search evidence... (messages, calls, contacts, files, etc.)" />
-          </div>
-          <button className="icon-btn" title="Notifications">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-              <path d="M13.73 21a2 2 0 01-3.46 0"/>
-            </svg>
-          </button>
-          <button className="icon-btn" title="Settings">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
-            </svg>
-          </button>
-          <button className="icon-btn" onClick={() => setToolsOpen(true)} title="Device Tools (Clipboard, WiFi, Backup, Export)">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
-            </svg>
-          </button>
           <button className="icon-btn" onClick={() => setGalleryOpen(true)} title="Deleted Photo Recovery Gallery">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
               <circle cx="8.5" cy="8.5" r="1.5"/>
               <polyline points="21 15 16 10 5 21"/>
-            </svg>
-          </button>
-          <button className="icon-btn" title="Help">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
-              <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
           </button>
           <div className="user-avatar">SK</div>
@@ -1132,15 +1075,7 @@ export default function App() {
           {/* DEVICE Section */}
           <div className="nav-section">
             <div className="section-header">DEVICE</div>
-            <button className={`nav-item ${step === "system" ? "active" : ""}`} onClick={() => setStep("system")}>
-              <span className="nav-icon">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="5" y="2" width="14" height="20" rx="2" ry="2"/>
-                  <line x1="12" y1="18" x2="12.01" y2="18"/>
-                </svg>
-              </span>
-              <span>System</span>
-            </button>
+
             <button className={`nav-item ${step === "apps" ? "active" : ""}`} onClick={() => setStep("apps")}>
               <span className="nav-icon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1205,14 +1140,22 @@ export default function App() {
           {/* ANALYSIS Section */}
           <div className="nav-section">
             <div className="section-header">ANALYSIS</div>
-            <button className={`nav-item ${step === "artifacts" ? "active" : ""}`} onClick={() => setStep("artifacts")}>
+            <button className={`nav-item ${step === "forensics" ? "active" : ""}`} onClick={() => setStep("forensics")}>
               <span className="nav-icon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <circle cx="11" cy="11" r="8"/>
                   <line x1="21" y1="21" x2="16.65" y2="16.65"/>
                 </svg>
               </span>
-              <span>Artifacts</span>
+              <span>Forensics</span>
+            </button>
+            <button className={`nav-item ${step === "device_tools" ? "active" : ""}`} onClick={() => setStep("device_tools")}>
+              <span className="nav-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+                </svg>
+              </span>
+              <span>Device Tools</span>
             </button>
             <button className={`nav-item ${step === "scan" ? "active" : ""}`} onClick={() => setStep("scan")}>
               <span className="nav-icon">
@@ -1240,28 +1183,6 @@ export default function App() {
           {/* REPORT Section */}
           <div className="nav-section">
             <div className="section-header">REPORT</div>
-            <button className={`nav-item ${step === "recover" ? "active" : ""}`} onClick={() => setStep("recover")}>
-              <span className="nav-icon">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="18" y1="20" x2="18" y2="10"/>
-                  <line x1="12" y1="20" x2="12" y2="4"/>
-                  <line x1="6" y1="20" x2="6" y2="14"/>
-                </svg>
-              </span>
-              <span>Findings</span>
-            </button>
-            <button className={`nav-item ${step === "case" ? "active" : ""}`} onClick={() => setStep("case")}>
-              <span className="nav-icon">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-                  <polyline points="14 2 14 8 20 8"/>
-                  <line x1="16" y1="13" x2="8" y2="13"/>
-                  <line x1="16" y1="17" x2="8" y2="17"/>
-                  <polyline points="10 9 9 9 8 9"/>
-                </svg>
-              </span>
-              <span>Reports</span>
-            </button>
             <button className={`nav-item ${step === "export" ? "active" : ""}`} onClick={() => setStep("export")}>
               <span className="nav-icon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1295,7 +1216,6 @@ export default function App() {
             directData={directData} directBusy={directBusy}
             onAcquire={doDirectAcquisition} onViewFull={() => setDirectView("full")}
             cameraBusy={cameraBusy} cameraStatus={cameraStatus} onCapturePhoto={doCapturePhoto}
-            micBusy={micBusy} micStatus={micStatus} micDuration={micDuration} onMicDurationChange={setMicDuration} onCaptureMic={doCaptureMic}
             waDeepResult={waDeepResult} waDeepBusy={waDeepBusy}
             rootCheck={rootCheck} rootBusy={rootBusy}
             onWhatsappDeep={doWhatsappDeep} onCheckRoot={doCheckRoot}
@@ -1308,11 +1228,6 @@ export default function App() {
             onStartMonitor={startCallMonitor} onStopMonitor={stopCallMonitor}
             onLoadRecordings={loadCallRecordings}
             onPlayRecording={playRecording} onStopPlaying={() => setPlayingRec(null)}
-            simSnapshot={simSnapshot} simBaseline={simBaseline}
-            simHistorical={simHistorical} simVerdict={simVerdict}
-            simHistory={simHistory} simBusy={simBusy}
-            onCollectSim={collectSim} onSimBaseline={applySimBaseline}
-            onSimSwapCheck={runSimSwapCheck} onDeleteSimSnap={deleteSimSnap}
             shot={shot} shotTs={shotTs} shotDark={shotDark}
             mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
             liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
@@ -1361,7 +1276,7 @@ export default function App() {
               }
             }}
             chargingStopped={chargingStopped}
-            onGoTo={setStep}
+            onGoTo={(s: string) => setStep(s as Step)}
           />
           {directView === "full" && directData && (
             <DirectDataViewer
@@ -1374,19 +1289,7 @@ export default function App() {
           </>
         )}
 
-        {step === "system" && (
-          <section className="workbench wb-system">
-            <div className="panel" style={{ gridArea: "strip", borderBottom: "1px solid #ddd" }}>
-              <div className="panel-bar">
-                <span className="panel-title">System</span>
-                <span className="hint">Device overview &amp; hardware details</span>
-              </div>
-            </div>
-            <div style={{ gridArea: "main", padding: 16, overflow: "auto" }}>
-              <OverviewTab serial={serial} mirror={mirror} directData={directData} />
-            </div>
-          </section>
-        )}
+
 
         {step === "apps" && (
           <AppsStep
@@ -1463,10 +1366,6 @@ export default function App() {
           />
         )}
 
-        {step === "deep" && (
-          <DeepForensicsStep serial={serial} onGoTo={setStep} />
-        )}
-
         {step === "messages" && (
           <MessagesStep serial={serial} waDeepResult={waDeepResult} recovery={result} directData={directData} onGoTo={setStep} />
         )}
@@ -1486,20 +1385,12 @@ export default function App() {
             onGoTo={setStep} />
         )}
 
-        {step === "artifacts" && (
-          <ArtifactsStep serial={serial} onGoTo={setStep} />
+        {step === "forensics" && (
+          <ForensicsStep serial={serial} onGoTo={setStep} />
         )}
 
-        {step === "deleted" && (
-          <DeletedDataStep serial={serial} onGoTo={setStep} />
-        )}
-
-        {step === "browser" && (
-          <BrowserForensicsStep serial={serial} onGoTo={setStep} />
-        )}
-
-        {step === "network" && (
-          <NetworkLocationStep serial={serial} onGoTo={setStep} />
+        {step === "device_tools" && (
+          <DeviceToolsStep serial={serial} onGoTo={setStep} />
         )}
 
         {step === "recover" && (
@@ -1580,19 +1471,7 @@ export default function App() {
           >
             🐛 Debug
           </button>
-          <button
-            className="mini"
-            onClick={() => setToolsOpen(true)}
-            title="Device tools: clipboard, WiFi, backup, export"
-            style={{
-              background: "transparent",
-              color: "var(--muted)",
-              border: "1px solid var(--line)",
-              marginRight: 8,
-            }}
-          >
-            🛠 Tools
-          </button>
+
           read-only by design · v0.1.0
         </span>
       </footer>
@@ -1604,23 +1483,6 @@ export default function App() {
         onClose={() => setDebugOpen(false)}
       />
 
-      {/* Device Details Overlay */}
-      {deviceDetailsOpen && (
-        <div className="device-details-overlay">
-          <div className="device-details-header">
-            <h2>📱 Device Details</h2>
-            <button className="mini" onClick={() => setDeviceDetailsOpen(false)}>✕ Close</button>
-          </div>
-          <div className="device-details-body">
-            <DeviceDetailsPanel serial={serial} />
-          </div>
-        </div>
-      )}
-
-      {/* Tools Panel */}
-      {toolsOpen && (
-        <ToolsPanel serial={serial} onClose={() => setToolsOpen(false)} />
-      )}
       {galleryOpen && (
         <DeletedPhotoGallery serial={serial} outputDir="D:\\recovery-tool\\workspace" onClose={() => setGalleryOpen(false)} />
       )}

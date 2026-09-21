@@ -19,8 +19,8 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [mirrorBusy, setMirrorBusy] = useState(false);
   const [liveStream, setLiveStream] = useState(false);
-  const [streamFps, setStreamFps] = useState(15);
-  const [streamMode, setStreamMode] = useState("normal");
+  const [streamFps, setStreamFps] = useState(30);
+  const [streamMode, setStreamMode] = useState("scrcpy");
   const [isVideoFrame, setIsVideoFrame] = useState(false);
 
   // Headless mode state
@@ -79,7 +79,7 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
   };
 
   // Listen for screen-frame events when live stream is active
-  // Throttle to avoid flickering — batch state updates and cap at ~12 fps
+  // Minimal throttle — only prevent duplicate frames within 16ms (~60fps cap)
   const lastFrameRef = useRef(0);
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(false);
@@ -89,18 +89,39 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
 
   useEffect(() => {
     if (!liveStream || !serial) return;
-    const unlisten = listen<{ serial: string; path: string; frame: number; timestamp: number; isVideo: boolean; mode: string }>(
+    const unlisten = listen<{ serial: string; path: string; streamPort?: number; frame: number; timestamp: number; isVideo: boolean; mode: string; scrcpyPid?: number; error?: string }>(
       "screen-frame",
       (event) => {
-        if (pausedRef.current) return; // Paused — drop all frames
         if (event.payload.serial === serial) {
+          const p = event.payload;
+          // scrcpy mode: opens its own window, just set a marker
+          if (p.mode === "scrcpy") {
+            setShot("__scrcpy__");
+            setShotTs(Date.now());
+            return;
+          }
+          if (p.mode === "scrcpy-error") {
+            setShot("__scrcpy-error__");
+            setMirrorErr(p.error || "scrcpy failed to start");
+            setShotTs(Date.now());
+            return;
+          }
+          if (p.mode === "scrcpy-exited") {
+            setShot("");
+            setLiveStream(false);
+            return;
+          }
+          if (pausedRef.current) return; // Paused — drop all frames
           const now = Date.now();
-          // Throttle: skip frames that arrive within 80ms of the last accepted one (~12fps cap)
-          if (now - lastFrameRef.current < 80) return;
+          // Minimal throttle: 16ms (~60fps cap) — only prevent duplicate event delivery
+          if (now - lastFrameRef.current < 16) return;
           lastFrameRef.current = now;
           // Batch all state updates together to prevent cascading re-renders
-          const p = event.payload;
-          setShot(p.path);
+          if (p.streamPort && p.streamPort > 0) {
+            setShot(`http://127.0.0.1:${p.streamPort}/frame`);
+          } else {
+            setShot(p.path);
+          }
           setShotTs(p.timestamp);
           setShotDark(false);
           setIsVideoFrame(p.isVideo || false);
@@ -121,8 +142,8 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
     setControlModeRaw(v);
     if (serial) {
       if (v) {
-        // Auto-start live stream at 10fps when control is enabled
-        api.startScreenStream(serial, 10, "normal").catch(() => {});
+        // Auto-start live stream at 30fps when control is enabled
+        api.startScreenStream(serial, 30, "normal").catch(() => {});
         setLiveStream(true);
       } else {
         // Stop stream when control is disabled
@@ -132,7 +153,7 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
     }
   }, [serial]);
 
-  // Headless mode toggle — screen off + live stream + control
+  // Headless mode toggle — screen off + live stream (control stays independent)
   const toggleHeadless = useCallback(async (activate: boolean) => {
     if (!serial) return;
     setHeadlessBusy(true);
@@ -141,22 +162,20 @@ export function useDeviceMirror({ serial, step, setStatus, setError }: UseDevice
         // 1. Start backend headless (wake lock + screen off)
         await api.headlessStart(serial);
         // 2. Start live stream in fast mode (screenrecord works with display off)
-        await api.startScreenStream(serial, 15, "fast");
+        await api.startScreenStream(serial, 30, "fast");
         setLiveStream(true);
-        setStreamFps(15);
+        setStreamFps(30);
         setStreamMode("fast");
-        // 3. Enable control mode
-        setControlModeRaw(true);
+        // 3. Do NOT auto-enable control mode — keep read-only unless user explicitly enables it
         setHeadlessActive(true);
-        setStatus("Headless mode ON — phone screen off, controlling from desktop");
+        setStatus("Headless mode ON — phone screen off, viewing only (touch disabled)");
       } else {
         // 1. Stop headless backend (wake screen, release lock)
         await api.headlessStop(serial);
         // 2. Stop stream
         await api.stopScreenStream(serial);
         setLiveStream(false);
-        // 3. Disable control mode
-        setControlModeRaw(false);
+        // 3. Do NOT touch control mode — leave it as the user set it
         setHeadlessActive(false);
         setStatus("Headless mode OFF — phone screen restored");
       }

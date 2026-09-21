@@ -55,7 +55,8 @@ pub struct MediaRef {
     pub file_path: Option<String>,
     pub mime_type: Option<String>,
     pub size: Option<i64>,
-    pub contact_jid: Option<String>, // WhatsApp number/contact
+    pub contact_jid: Option<String>,
+    pub message_timestamp: Option<i64>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -397,10 +398,11 @@ fn parse_media(conn: &Connection) -> Vec<MediaRef> {
         "NULL"
     };
     
-    // Join with message and chat tables to get contact JID
+    // Join with message and chat tables to get contact JID + timestamp
     let sql = format!(
         "SELECT mm.message_row_id, mm.file_path, mm.mime_type, {size_col}, 
-                COALESCE(j.user, j.server, '') as contact_jid
+                COALESCE(j.user, j.server, '') as contact_jid,
+                m.timestamp as message_timestamp
          FROM message_media mm
          LEFT JOIN message m ON m._id = mm.message_row_id
          LEFT JOIN chat c ON c._id = m.chat_row_id
@@ -417,6 +419,7 @@ fn parse_media(conn: &Connection) -> Vec<MediaRef> {
             mime_type: r.get(2)?,
             size: r.get(3)?,
             contact_jid: r.get(4)?,
+            message_timestamp: r.get(5)?,
         })
     })
     .map(|rows| rows.flatten().collect())

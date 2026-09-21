@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "recovery-core"
 path = "src/main.rs"
 
+[[bin]]
+name = "remote_agent_server"
+path = "src/bin/remote_agent_server.rs"
+
 [dependencies]
 anyhow = "1"
 thiserror = "1"

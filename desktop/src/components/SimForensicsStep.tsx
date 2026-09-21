@@ -1,6 +1,6 @@
 import type { SimSnapshot, HistoricalSim, SimSwapVerdict } from "../types";
 
-type Step = "connect" | "apps" | "system" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "artifacts" | "deep" | "deleted" | "browser" | "network" | "recover" | "export" | "case" | "timeline";
+type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 interface SimForensicsStepProps {
   serial: string;
@@ -125,7 +125,7 @@ export function SimForensicsStep({
 
           <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
             <button className="mini" onClick={() => onGoTo("contacts")}>← Contacts</button>
-            <button className="mini" onClick={() => onGoTo("artifacts")}>Artifacts →</button>
+            <button className="mini" onClick={() => onGoTo("forensics")}>Forensics →</button>
           </div>
         </div>
       </div>

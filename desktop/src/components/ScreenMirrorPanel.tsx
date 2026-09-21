@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ScreenCapture, DeviceMirror } from "../types";
-import { playDeviceRingtone, screenTap, screenSwipe, screenText, screenKey, deviceRotate, deviceAutoRotate } from "../api";
+import { playDeviceRingtone, screenTap, screenSwipe, screenText, screenKey, deviceRotate, deviceAutoRotate, deviceFreeze, deviceUnfreeze } from "../api";
 import { CaptureGallery } from "./CaptureGallery";
 
 interface ScreenMirrorPanelProps {
@@ -66,6 +66,10 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
 
   const [ringing, setRinging] = useState(false);
   const [ringtoneMsg, setRingtoneMsg] = useState<string | null>(null);
+  const [frozen, setFrozen] = useState(false);
+  const [freezeBusy, setFreezeBusy] = useState(false);
+  const [freezeMsg, setFreezeMsg] = useState<string | null>(null);
+  const [maximized, setMaximized] = useState(false);
 
   // ── Remote Control State ──
   const [typeText, setTypeText] = useState("");
@@ -73,24 +77,28 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
   const imgRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef<{ x: number; y: number; time: number } | null>(null);
 
-  // ── Image Preload — prevents flash/blank between frames ──
+  // ── Image display — file paths use preload for smooth transitions ──
   const [displaySrc, setDisplaySrc] = useState<string | null>(null);
   const [displayReady, setDisplayReady] = useState(false);
   const preloadImgRef = useRef<HTMLImageElement | null>(null);
+  const firstFrameRef = useRef(true);
+  const isScrcpy = shot === "__scrcpy__";
+  const isScrcpyError = shot === "__scrcpy-error__";
 
   useEffect(() => {
-    if (!shot) { setDisplaySrc(null); return; }
+    if (!shot || shot === "__scrcpy__") { setDisplaySrc(null); setDisplayReady(false); return; }
+
+    // File path = screencap/screenrecord — use preload for smooth transitions
     const src = `${convertFileSrc(shot)}?t=${shotTs}`;
-    // Reuse a single Image object for preloading
-    if (!preloadImgRef.current) {
-      preloadImgRef.current = new Image();
-    }
-    const img = preloadImgRef.current;
-    img.onload = () => {
+    if (firstFrameRef.current) {
+      firstFrameRef.current = false;
+      if (!preloadImgRef.current) preloadImgRef.current = new Image();
+      preloadImgRef.current.onload = () => { setDisplaySrc(src); setDisplayReady(true); };
+      preloadImgRef.current.src = src;
+    } else {
       setDisplaySrc(src);
       setDisplayReady(true);
-    };
-    img.src = src;
+    }
   }, [shot, shotTs]);
 
   // ── Device Rotation — controls the real phone display orientation ──
@@ -195,6 +203,45 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
     return { x: Math.round(relX * deviceRes.w), y: Math.round(relY * deviceRes.h) };
   }, [deviceRes]);
 
+  const handleControlToggle = useCallback(() => {
+    if (!controlMode) {
+      // Enabling control — ask for confirmation
+      const ok = window.confirm(
+        "Enable interactive control?\n\n" +
+        "This will send tap/swipe/key events to the connected device.\n" +
+        "Clicks on the screen mirror will interact with the phone.\n\n" +
+        "Cancel = stay read-only (safe)"
+      );
+      if (!ok) return;
+    }
+    onControlModeChange(!controlMode);
+  }, [controlMode, onControlModeChange]);
+
+  const handleFreezeToggle = useCallback(async () => {
+    if (!serial) return;
+    setFreezeBusy(true);
+    setFreezeMsg(null);
+    try {
+      if (frozen) {
+        const msg = await deviceUnfreeze(serial);
+        setFrozen(false);
+        setFreezeMsg(msg);
+      } else {
+        // Force disable control mode when freezing
+        if (controlMode) onControlModeChange(false);
+        const msg = await deviceFreeze(serial);
+        setFrozen(true);
+        setFreezeMsg(msg);
+      }
+    } catch (e) {
+      setFreezeMsg(`Freeze failed: ${e}`);
+    } finally {
+      setFreezeBusy(false);
+      // Auto-clear message after 4 seconds
+      setTimeout(() => setFreezeMsg(null), 4000);
+    }
+  }, [serial, frozen, controlMode, onControlModeChange]);
+
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (!controlMode || !serial) return;
     const pt = mapTo(e.clientX, e.clientY);
@@ -263,6 +310,20 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
           {autoCaptureActive ? " · ● auto" : ""}
         </span>
         <span style={{ flex: 1 }} />
+        {/* Maximize button */}
+        <button
+          onClick={() => setMaximized(!maximized)}
+          title={maximized ? "Restore mirror to normal size" : "Maximize mirror display"}
+          style={{
+            padding: "3px 10px", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
+            borderRadius: 6, border: maximized ? "1px solid #3b82f6" : "1px solid #555",
+            background: maximized ? "#3b82f6" : "rgba(59,130,246,0.12)",
+            color: maximized ? "#fff" : "#93c5fd",
+            cursor: "pointer", transition: "all 0.2s ease",
+          }}
+        >
+          {maximized ? "⊟ Restore" : "⊞ Maximize"}
+        </button>
         {/* Pause / Resume button */}
         {liveStream && (
           <button
@@ -297,17 +358,41 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
           {headlessBusy ? "⏳ Switching…" : headlessActive ? "🕶 Exit Headless" : "🕶 Headless Mode"}
         </button>
       </div>
-      <div className="panel-body mirror-combo">
+      <div className={`panel-body mirror-combo${maximized ? " mirror-maximized" : ""}`}>
         {/* Left panel — Phone Monitor */}
         <div className="mirror-preview-col">
           <div
             className="mirror-frame"
             ref={imgRef}
-            style={controlMode && shot ? { cursor: "crosshair", userSelect: "none" } : undefined}
+            style={controlMode && shot ? { cursor: "crosshair", userSelect: "none" } : shot ? { cursor: "default", userSelect: "none" } : undefined}
             onPointerDown={handlePointerDown}
             onPointerUp={handlePointerUp}
           >
-            {shot ? (
+            {/* Read-only overlay indicator */}
+            {shot && !controlMode && (
+              <div style={{
+                position: "absolute", top: 6, left: 6, zIndex: 4,
+                display: "flex", alignItems: "center", gap: 4,
+                background: "rgba(0,0,0,0.7)", borderRadius: 6, padding: "2px 8px",
+                border: "1px solid rgba(100,100,100,0.4)",
+              }}>
+                <span style={{ fontSize: 11 }}>🔒</span>
+                <span style={{ fontSize: 9, fontWeight: 600, color: "#aaa", letterSpacing: 0.5 }}>READ ONLY</span>
+              </div>
+            )}
+            {/* Interactive mode indicator */}
+            {shot && controlMode && (
+              <div style={{
+                position: "absolute", top: 6, left: 6, zIndex: 4,
+                display: "flex", alignItems: "center", gap: 4,
+                background: "rgba(34,197,94,0.2)", borderRadius: 6, padding: "2px 8px",
+                border: "1px solid rgba(34,197,94,0.4)",
+              }}>
+                <span style={{ fontSize: 11 }}>🎮</span>
+                <span style={{ fontSize: 9, fontWeight: 600, color: "#22c55e", letterSpacing: 0.5 }}>INTERACTIVE</span>
+              </div>
+            )}
+            {shot && shot !== "__scrcpy__" && shot !== "__scrcpy-error__" ? (
               isVideoFrame ? (
                 <video
                   key={displaySrc || undefined}
@@ -323,6 +408,29 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
                   draggable={false}
                 />
               )
+            ) : isScrcpy ? (
+              // scrcpy is running — show status (real-time mirror is in the separate scrcpy window)
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, padding: 20, textAlign: "center" }}>
+                <div style={{ fontSize: 36 }}>🖥️</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#22c55e" }}>scrcpy Running</div>
+                <div style={{ fontSize: 11, color: "#aaa", lineHeight: 1.6, maxWidth: 260 }}>
+                  Real-time mirror is in the <b style={{ color: "#86efac" }}>scrcpy window</b>.<br />
+                  Look for it in your taskbar.
+                </div>
+                <div style={{
+                  display: "flex", gap: 6, alignItems: "center", padding: "5px 12px",
+                  background: "rgba(34,197,94,0.12)", borderRadius: 8, border: "1px solid rgba(34,197,94,0.3)"
+                }}>
+                  <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#22c55e", animation: "pulse 2s infinite" }} />
+                  <span style={{ fontSize: 10, color: "#86efac", fontWeight: 600 }}>Hardware accelerated • True real-time</span>
+                </div>
+              </div>
+            ) : isScrcpyError ? (
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 20, textAlign: "center" }}>
+                <div style={{ fontSize: 32 }}>⚠️</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444" }}>scrcpy Failed</div>
+                <div style={{ fontSize: 11, color: "#aaa", maxWidth: 260 }}>{mirrorErr || "Could not launch scrcpy"}</div>
+              </div>
             ) : mirrorBusy ? (
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: 12 }}>
                 <div className="spin" style={{ width: 20, height: 20, borderWidth: 3 }} />
@@ -382,6 +490,7 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
           {mirrorErr && <p className="hint lock-warn" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0 }}>⚠ {mirrorErr}</p>}
           {shotDark && <p className="hint lock-warn" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0 }}>🔒 Dark frame — locked</p>}
           {ringtoneMsg && <p className="hint" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0, color: ringtoneMsg.startsWith("⚠") ? "var(--err)" : "var(--ok)", fontWeight: 500 }}>{ringtoneMsg}</p>}
+          {freezeMsg && <p className="hint" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0, color: frozen ? "#ef4444" : "var(--ok)", fontWeight: 600 }}>{freezeMsg}</p>}
           <div className="mirror-toolbar">
             <button disabled={!serial || mirrorBusy || liveStream} onClick={() => serial && onCapture(serial)} title="Take snapshot" style={{ padding: "2px 6px", fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0 }}>
               📸 Snap
@@ -394,14 +503,23 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
               5s auto
             </label>
             <span className="mirror-sep" />
-            {/* Remote control toggle */}
+            {/* Remote control toggle — requires confirmation to enable */}
             <button
               disabled={!serial || !shot}
-              onClick={() => onControlModeChange(!controlMode)}
-              title={controlMode ? "Disable touch control" : "Enable click/swipe on screen"}
-              style={{ padding: "2px 6px", fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0, background: controlMode ? "var(--ok, #22c55e)" : undefined, color: controlMode ? "#fff" : undefined }}
+              onClick={handleControlToggle}
+              title={controlMode ? "Disable touch control — return to read-only" : "Read-only — clicks do NOT touch the device"}
+              style={{ padding: "2px 6px", fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0, background: controlMode ? "var(--ok, #22c55e)" : "rgba(100,100,100,0.15)", color: controlMode ? "#fff" : "#888", border: controlMode ? undefined : "1px solid rgba(100,100,100,0.3)" }}
             >
-              {controlMode ? "🎮 Control ON" : "🎮 Control"}
+              {controlMode ? "🎮 Control ON" : "🔒 Read Only"}
+            </button>
+            {/* Freeze device — blocks ALL physical touch on the phone */}
+            <button
+              disabled={!serial || freezeBusy}
+              onClick={handleFreezeToggle}
+              title={frozen ? "Unfreeze — restore touch on the phone" : "Freeze phone — disable ALL finger touch on the device"}
+              style={{ padding: "2px 6px", fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0, background: frozen ? "#ef4444" : undefined, color: frozen ? "#fff" : "#e87979", border: frozen ? undefined : "1px solid rgba(239,68,68,0.3)", fontWeight: frozen ? 700 : undefined }}
+            >
+              {freezeBusy ? "⏳ …" : frozen ? "❄️ Frozen" : "❄️ Freeze Phone"}
             </button>
             {liveStream ? (
               <button disabled={!liveStream} onClick={() => serial && onStopStream(serial)} title="Stop stream" style={{ padding: "2px 6px", fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0 }}>⏹ Stop</button>
@@ -413,8 +531,8 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
                 <option value={5}>5</option><option value={10}>10</option><option value={15}>15</option>
                 <option value={20}>20</option><option value={30}>30</option><option value={60}>60</option>
               </select>
-              <select value={streamMode} onChange={(e) => onStreamModeChange(e.target.value)} disabled={liveStream} title="Mode" style={{ width: 52, padding: "1px 2px", fontSize: 10 }}>
-                <option value="normal">Stable</option><option value="fast">Fast</option>
+              <select value={streamMode} onChange={(e) => onStreamModeChange(e.target.value)} disabled={liveStream} title="Mode" style={{ width: 58, padding: "1px 2px", fontSize: 10 }}>
+                <option value="scrcpy">Ultra</option><option value="normal">Stable</option><option value="fast">Fast</option>
               </select>
             </div>
           </div>

@@ -65,16 +65,39 @@ pub struct BrowserHistory {
     pub source: String, // "live"
 }
 
-/// A WhatsApp media file.
+/// Confidence level for media-to-contact attribution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AttributionConfidence {
+    /// Direct database match: message_media → message → chat → JID
+    High,
+    /// Correlated by size + timestamp or partial path match
+    Medium,
+    /// Filename pattern or weak heuristic only
+    Low,
+    /// No correlation possible (e.g. .Statuses without DB link)
+    None,
+}
+
+/// A WhatsApp media file with forensic attribution metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WhatsAppMedia {
     pub path: String,
     pub filename: String,
     pub size: i64,
-    pub media_type: String, // "image", "video", "audio", "document"
-    pub source_folder: String, // e.g., ".Statuses", "WhatsApp Images"
-    pub contact: Option<String>, // WhatsApp number/contact if available
-    pub source: String,     // "live"
+    pub media_type: String,
+    pub source_folder: String,
+    pub timestamp: i64,
+    pub source: String,
+    // ── Attribution fields ──
+    pub contact: Option<String>,
+    pub contact_name: Option<String>,
+    pub chat_jid: Option<String>,
+    pub whatsapp_message_id: Option<i64>,
+    pub message_timestamp: Option<i64>,
+    pub source_database: Option<String>,
+    pub evidence: Vec<String>,
+    pub confidence: AttributionConfidence,
 }
 
 /// A WhatsApp chat entry.
@@ -587,67 +610,148 @@ fn match_recording_to_call<'a>(rec: &CallRecording, logs: &'a [CallLog]) -> Opti
     None
 }
 
+/// Parse date ("2025-06-17") and time ("11:44") from `ls -la` output into epoch seconds.
+fn parse_ls_datetime(date_str: &str, time_str: &str) -> i64 {
+    let d: Vec<u64> = date_str.split('-').filter_map(|s| s.parse().ok()).collect();
+    let t: Vec<u64> = time_str.split(':').filter_map(|s| s.parse().ok()).collect();
+    if d.len() < 3 || t.len() < 2 { return 0; }
+    let (y, m, day, h, min) = (d[0], d[1], d[2], t[0], t[1]);
+    // Days from months (non-leap base)
+    let days_before_month = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let leap = |yr: u64| -> u64 { (yr - 1) / 4 - (yr - 1) / 100 + (yr - 1) / 400 };
+    let days = (y - 1970) * 365 + leap(y) - leap(1970)
+        + days_before_month[m as usize]
+        + if m > 2 && y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 1 } else { 0 }
+        + day - 1;
+    (days as i64) * 86400 + (h as i64) * 3600 + (min as i64) * 60
+}
+
 /// Acquire WhatsApp media files from device storage.
-pub fn acquire_whatsapp_media(adb: &AdbClient, serial: &str) -> Result<Vec<WhatsAppMedia>> {
+/// Returns (media_files, notes) so callers know about contact mapping status.
+pub fn acquire_whatsapp_media(adb: &AdbClient, serial: &str) -> Result<(Vec<WhatsAppMedia>, Vec<String>)> {
+    let mut notes = Vec::new();
     let media_roots = vec![
         "/sdcard/Android/media/com.whatsapp/WhatsApp/Media",
         "/sdcard/WhatsApp/Media",
     ];
 
     // Try to pull and parse WhatsApp database for contact mapping
-    let mut media_contacts: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut media_contacts_by_filename: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Rich media refs for multi-strategy correlation
+    let mut media_refs: Vec<crate::sqlite::MediaRef> = Vec::new();
+    let mut contact_names: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut source_db_name = String::new();
     let db_paths = vec![
-        "/sdcard/Android/media/com.whatsapp/WhatsApp/Databases/msgstore.db",
-        "/sdcard/WhatsApp/Databases/msgstore.db",
+        ("/sdcard/Android/media/com.whatsapp/WhatsApp/Databases/msgstore.db", "msgstore"),
+        ("/sdcard/WhatsApp/Databases/msgstore.db", "msgstore"),
+        ("/sdcard/Android/media/com.whatsapp/WhatsApp/Databases/wa.db", "wa"),
+        ("/sdcard/WhatsApp/Databases/wa.db", "wa"),
     ];
     
-    for db_path in db_paths {
+    let temp_dir = std::path::PathBuf::from("D:\\RecoverKit_Temp");
+    std::fs::create_dir_all(&temp_dir).ok();
+    let mut db_found = false;
+    
+    for (db_path, db_type) in db_paths {
         let check_cmd = format!("ls -la {} 2>/dev/null", db_path);
         let output = adb.exec_out(serial, &["sh", "-c", &check_cmd]).unwrap_or_default();
         let text = String::from_utf8_lossy(&output);
         
-        if text.contains("msgstore.db") {
-            // Pull the database
-            let temp_dir = std::path::PathBuf::from("D:\\RecoverKit_Temp");
-            std::fs::create_dir_all(&temp_dir).ok();
-            let local_db = temp_dir.join("msgstore.db");
+        let db_name = db_path.rsplit('/').next().unwrap_or("db");
+        if text.contains(db_name) {
+            db_found = true;
+            let local_db = temp_dir.join(db_name);
             
             if adb.pull(serial, db_path, &local_db).is_ok() {
-                // Parse the database to get media-to-contact mappings
+                notes.push(format!("Pulled {} ({} bytes) for contact mapping", db_name,
+                    std::fs::metadata(&local_db).map(|m| m.len()).unwrap_or(0)));
+                
+                // Try full parse (msgstore.db has message_media table)
                 if let Ok(parse_result) = crate::sqlite::parse_msgstore(&local_db) {
-                    for media_ref in &parse_result.media {
-                        if let (Some(file_path), Some(contact_jid)) = (&media_ref.file_path, &media_ref.contact_jid) {
-                            if !contact_jid.is_empty() {
-                                // Store by full path (normalized)
-                                let normalized = file_path.replace('\\', "/");
-                                media_contacts.insert(normalized.clone(), contact_jid.clone());
-                                
-                                // Also store by filename for fallback matching
-                                if let Some(filename) = file_path.rsplit('/').next().or_else(|| file_path.rsplit('\\').next()) {
-                                    media_contacts_by_filename.insert(filename.to_string(), contact_jid.clone());
-                                }
-                                
-                                // Also store by partial path (last 2 segments)
-                                let parts: Vec<&str> = normalized.split('/').collect();
-                                if parts.len() >= 2 {
-                                    let partial = parts[parts.len()-2..].join("/");
-                                    media_contacts.insert(partial, contact_jid.clone());
+                    source_db_name = db_name.to_string();
+                    media_refs.extend(parse_result.media);
+                    for contact in &parse_result.contacts {
+                        if !contact.name.is_empty() {
+                            contact_names.insert(contact.jid.clone(), contact.name.clone());
+                        }
+                    }
+                    notes.push(format!("Parsed {}: {} media refs, {} contacts",
+                        db_name, media_refs.len(), contact_names.len()));
+                } else if db_type == "wa" {
+                    // wa.db doesn't have message_media but may have jid/contact tables
+                    // Try to parse contacts directly
+                    if let Ok(conn) = rusqlite::Connection::open_with_flags(
+                        &local_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    ) {
+                        // Try to get JID list from wa.db
+                        if let Ok(mut stmt) = conn.prepare(
+                            "SELECT user, display_name FROM jid WHERE user IS NOT NULL AND user != '' LIMIT 10000"
+                        ) {
+                            let rows = stmt.query_map([], |r| {
+                                Ok((r.get::<_, String>(0).unwrap_or_default(), r.get::<_, String>(1).unwrap_or_default()))
+                            });
+                            if let Ok(rows) = rows {
+                                for row in rows.flatten() {
+                                    if !row.0.is_empty() {
+                                        contact_names.insert(row.0.clone(), row.1.clone());
+                                    }
                                 }
                             }
                         }
+                        if !contact_names.is_empty() {
+                            notes.push(format!("Parsed wa.db: {} contacts found", contact_names.len()));
+                        }
                     }
                 }
+            } else {
+                notes.push(format!("Failed to pull {} from device", db_name));
             }
-            break;
+            // If we got msgstore.db with media refs, no need to try wa.db
+            if db_type == "msgstore" && !media_refs.is_empty() {
+                break;
+            }
+        }
+    }
+    
+    if !db_found {
+        notes.push("WhatsApp database not found on sdcard — contact mapping unavailable. Use Deep Extraction for contact details.".to_string());
+    } else if media_refs.is_empty() && contact_names.is_empty() {
+        notes.push("WhatsApp database found but could not be parsed (may be encrypted) — contact mapping unavailable. Use Deep Extraction to decrypt.".to_string());
+    }
+
+    // ── Build correlation indices from media_refs ──
+    // Strong: normalized full path → media_ref
+    let mut by_full_path: std::collections::HashMap<String, &crate::sqlite::MediaRef> = std::collections::HashMap::new();
+    // Strong: last-2-segment path → media_ref
+    let mut by_partial_path: std::collections::HashMap<String, &crate::sqlite::MediaRef> = std::collections::HashMap::new();
+    // Medium: filename → media_ref
+    let mut by_filename: std::collections::HashMap<String, &crate::sqlite::MediaRef> = std::collections::HashMap::new();
+    // Medium: file size → list of media_refs
+    let mut by_size: std::collections::HashMap<i64, Vec<&crate::sqlite::MediaRef>> = std::collections::HashMap::new();
+
+    for mr in &media_refs {
+        if let Some(ref fp) = mr.file_path {
+            let normalized = fp.replace('\\', "/");
+            by_full_path.insert(normalized.clone(), mr);
+            if let Some(fname) = fp.rsplit('/').next().or_else(|| fp.rsplit('\\').next()) {
+                by_filename.insert(fname.to_string(), mr);
+            }
+            let segs: Vec<&str> = normalized.split('/').collect();
+            if segs.len() >= 2 {
+                by_partial_path.insert(segs[segs.len()-2..].join("/"), mr);
+            }
+        }
+        if let Some(sz) = mr.size {
+            if sz > 0 {
+                by_size.entry(sz).or_default().push(mr);
+            }
         }
     }
 
     let mut media_files = Vec::new();
     let mut seen_paths = std::collections::HashSet::new();
+    let is_status_folder = |folder: &str| folder.to_lowercase() == ".statuses";
 
     for root in media_roots {
-        // Use find + ls combo to get paths and sizes in one shot (no per-file stat)
         let cmd = format!(
             r"find {} -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.gif' -o -iname '*.mp4' -o -iname '*.3gp' -o -iname '*.opus' -o -iname '*.ogg' -o -iname '*.pdf' -o -iname '*.doc' -o -iname '*.docx' \) -exec ls -la {{}} + 2>/dev/null",
             root
@@ -656,23 +760,15 @@ pub fn acquire_whatsapp_media(adb: &AdbClient, serial: &str) -> Result<Vec<Whats
         let text = String::from_utf8_lossy(&output);
 
         for line in text.lines() {
-            if !line.starts_with('-') {
-                continue;
-            }
-            // Parse: -rw-rw---- 1 u0_a0 media_rw 227788 2025-06-17 11:44 filename
+            if !line.starts_with('-') { continue; }
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 8 {
-                continue;
-            }
+            if parts.len() < 8 { continue; }
             let size = parts[4].parse::<i64>().unwrap_or(0);
+            let timestamp = parse_ls_datetime(parts[5], parts[6]);
             let full_path = parts[7..].join(" ");
-
-            if full_path.is_empty() || seen_paths.contains(&full_path) {
-                continue;
-            }
+            if full_path.is_empty() || seen_paths.contains(&full_path) { continue; }
             seen_paths.insert(full_path.clone());
 
-            // Determine media type from path
             let lower = full_path.to_lowercase();
             let media_type = if lower.contains("/whatsapp images/") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") || lower.ends_with(".gif") {
                 "image"
@@ -685,32 +781,89 @@ pub fn acquire_whatsapp_media(adb: &AdbClient, serial: &str) -> Result<Vec<Whats
             } else {
                 "other"
             };
-
             let filename = full_path.rsplit('/').next().unwrap_or(&full_path).to_string();
+            let source_folder = full_path.rsplit('/').nth(1).unwrap_or("Unknown").to_string();
 
-            // Extract source folder (e.g., ".Statuses", "WhatsApp Images")
-            let source_folder = full_path
-                .rsplit('/')
-                .nth(1)
-                .unwrap_or("Unknown")
-                .to_string();
+            // ── Multi-strategy correlation pipeline ──
+            let mut contact_jid: Option<String> = None;
+            let mut msg_id: Option<i64> = None;
+            let mut msg_ts: Option<i64> = None;
+            let mut evidence: Vec<String> = Vec::new();
+            let mut confidence = AttributionConfidence::None;
+            let is_statuses = is_status_folder(&source_folder);
 
-            // Try to match with database contact using multiple strategies
-            let contact = media_contacts.get(&full_path).cloned()
-                .or_else(|| {
-                    // Try partial path match (folder/filename)
-                    let parts: Vec<&str> = full_path.split('/').collect();
-                    if parts.len() >= 2 {
-                        let partial = parts[parts.len()-2..].join("/");
-                        media_contacts.get(&partial).cloned()
-                    } else {
-                        None
+            // Strategy 1 (STRONG): Full path match in message_media
+            if let Some(mr) = by_full_path.get(&full_path) {
+                contact_jid = mr.contact_jid.clone();
+                msg_id = Some(mr.message_row_id);
+                msg_ts = mr.message_timestamp;
+                evidence.push(format!("Full path match in {}", source_db_name));
+                confidence = AttributionConfidence::High;
+            }
+            // Strategy 2 (STRONG): Partial path match (last 2 segments)
+            if contact_jid.is_none() {
+                let segs: Vec<&str> = full_path.split('/').collect();
+                if segs.len() >= 2 {
+                    let partial = segs[segs.len()-2..].join("/");
+                    if let Some(mr) = by_partial_path.get(&partial) {
+                        contact_jid = mr.contact_jid.clone();
+                        msg_id = Some(mr.message_row_id);
+                        msg_ts = mr.message_timestamp;
+                        evidence.push(format!("Partial path match ({}) in {}", partial, source_db_name));
+                        confidence = AttributionConfidence::High;
                     }
-                })
-                .or_else(|| {
-                    // Try filename-only match
-                    media_contacts_by_filename.get(&filename).cloned()
-                });
+                }
+            }
+            // Strategy 3 (MEDIUM): Filename match
+            if contact_jid.is_none() {
+                if let Some(mr) = by_filename.get(&filename) {
+                    contact_jid = mr.contact_jid.clone();
+                    msg_id = Some(mr.message_row_id);
+                    msg_ts = mr.message_timestamp;
+                    evidence.push(format!("Filename match ({}) in {}", filename, source_db_name));
+                    confidence = AttributionConfidence::Medium;
+                }
+            }
+            // Strategy 4 (MEDIUM): Size + timestamp correlation
+            if contact_jid.is_none() && size > 0 {
+                if let Some(candidates) = by_size.get(&size) {
+                    // Find candidate with closest timestamp
+                    let mut best: Option<(&&crate::sqlite::MediaRef, i64)> = None;
+                    for mr in candidates {
+                        if let Some(mts) = mr.message_timestamp {
+                            let delta = (timestamp - mts).abs();
+                            if delta < 3600 { // within 1 hour
+                                if best.is_none() || delta < best.unwrap().1 {
+                                    best = Some((mr, delta));
+                                }
+                            }
+                        }
+                    }
+                    if let Some((mr, delta)) = best {
+                        contact_jid = mr.contact_jid.clone();
+                        msg_id = Some(mr.message_row_id);
+                        msg_ts = mr.message_timestamp;
+                        evidence.push(format!("Size+timestamp correlation ({}s delta) in {}", delta, source_db_name));
+                        confidence = AttributionConfidence::Medium;
+                    }
+                }
+            }
+
+            // Resolve contact display name
+            let contact_name = contact_jid.as_ref().and_then(|jid| contact_names.get(jid).cloned());
+            let contact_display = match (&contact_name, &contact_jid) {
+                (Some(name), Some(jid)) if !name.is_empty() => Some(format!("{} ({})", name, jid)),
+                (_, Some(jid)) => Some(jid.clone()),
+                _ => None,
+            };
+
+            // .Statuses special handling
+            if is_statuses && confidence == AttributionConfidence::None {
+                evidence.push("Status media — contact not determinable from file alone".to_string());
+            }
+            if !is_statuses && confidence == AttributionConfidence::None && !media_refs.is_empty() {
+                evidence.push("No database correlation found".to_string());
+            }
 
             media_files.push(WhatsAppMedia {
                 path: full_path,
@@ -718,13 +871,30 @@ pub fn acquire_whatsapp_media(adb: &AdbClient, serial: &str) -> Result<Vec<Whats
                 size,
                 media_type: media_type.to_string(),
                 source_folder,
-                contact,
+                timestamp,
                 source: "live".to_string(),
+                contact: contact_display,
+                contact_name,
+                chat_jid: contact_jid,
+                whatsapp_message_id: msg_id,
+                message_timestamp: msg_ts,
+                source_database: if !evidence.is_empty() { Some(source_db_name.clone()) } else { None },
+                evidence,
+                confidence,
             });
         }
     }
 
-    Ok(media_files)
+    // Summary stats
+    let high = media_files.iter().filter(|m| m.confidence == AttributionConfidence::High).count();
+    let medium = media_files.iter().filter(|m| m.confidence == AttributionConfidence::Medium).count();
+    let none = media_files.iter().filter(|m| m.confidence == AttributionConfidence::None).count();
+    if !media_files.is_empty() {
+        notes.push(format!("Attribution: {} high, {} medium, {} unattributed of {} total",
+            high, medium, none, media_files.len()));
+    }
+
+    Ok((media_files, notes))
 }
 
 /// Acquire WhatsApp chat information from device.
@@ -845,7 +1015,10 @@ pub fn acquire_all(adb: &AdbClient, serial: &str) -> Result<DirectAcquisition> {
     }
 
     match acquire_whatsapp_media(adb, serial) {
-        Ok(media) => result.whatsapp_media = media,
+        Ok((media, wa_notes)) => {
+            result.whatsapp_media = media;
+            result.notes.extend(wa_notes);
+        },
         Err(e) => result.notes.push(format!("WhatsApp media acquisition failed: {}", e)),
     }
 
@@ -1088,14 +1261,44 @@ pub fn acquire_whatsapp_deep(adb: &AdbClient, serial: &str) -> Result<WhatsAppDe
                                                 })
                                                 .or_else(|| filename_map.get(&filename).cloned());
                                             
+                                            let confidence = if contact.is_some() {
+                                                AttributionConfidence::High
+                                            } else {
+                                                AttributionConfidence::None
+                                            };
+                                            let evidence = if contact.is_some() {
+                                                vec!["Deep extraction database match".to_string()]
+                                            } else {
+                                                vec!["No database correlation in deep extraction".to_string()]
+                                            };
+                                            let contact_name = contact.as_ref().and_then(|jid| {
+                                                parse_result.contacts.iter()
+                                                    .find(|c| c.jid == *jid)
+                                                    .map(|c| c.name.clone())
+                                                    .filter(|n| !n.is_empty())
+                                            });
+                                            let contact_display = match (&contact_name, &contact) {
+                                                (Some(name), Some(jid)) => Some(format!("{} ({})", name, jid)),
+                                                (_, Some(jid)) => Some(jid.clone()),
+                                                _ => None,
+                                            };
+
                                             result.media_with_contacts.push(WhatsAppMedia {
                                                 path: line.to_string(),
                                                 filename,
-                                                size: 0, // Would need additional stat call
+                                                size: 0,
                                                 media_type: media_type.to_string(),
                                                 source_folder: subdir.to_string(),
-                                                contact,
+                                                timestamp: 0,
                                                 source: "decrypted".to_string(),
+                                                contact: contact_display,
+                                                contact_name,
+                                                chat_jid: contact.clone(),
+                                                whatsapp_message_id: None,
+                                                message_timestamp: None,
+                                                source_database: Some("msgstore_decrypted".to_string()),
+                                                evidence,
+                                                confidence,
                                             });
                                         }
                                     }

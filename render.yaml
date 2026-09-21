@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: recoverkit-remote-agent
+    env: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: .
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 7799
+      - key: STORAGE_DIR
+        value: /app/data
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1
