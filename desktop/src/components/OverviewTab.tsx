@@ -1,6 +1,7 @@
 import { useState, useEffect, type ReactNode } from "react";
 import * as api from "../api";
 import type { DeviceFullInfo, DeviceMirror, DirectAcquisition } from "../types";
+import type { Activity } from "../hooks/useActivityLog";
 
 interface OverviewTabProps {
   serial: string;
@@ -8,9 +9,10 @@ interface OverviewTabProps {
   directData: DirectAcquisition | null;
   screenMirror?: ReactNode;
   onGoTo?: (step: string) => void;
+  activities?: Activity[];
 }
 
-export function OverviewTab({ serial, mirror, directData, screenMirror, onGoTo }: OverviewTabProps) {
+export function OverviewTab({ serial, mirror, directData, screenMirror, onGoTo, activities = [] }: OverviewTabProps) {
   const [fullInfo, setFullInfo] = useState<DeviceFullInfo | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -332,15 +334,22 @@ export function OverviewTab({ serial, mirror, directData, screenMirror, onGoTo }
               <div className="flex items-center gap-2 px-4 py-3 bg-slate-700/50 border-b border-slate-700 text-xs font-semibold text-white uppercase tracking-wider">
                 <span>🕐</span>
                 <span>Recent Activity</span>
-                <button className="ml-auto text-[11px] text-slate-400 hover:text-white normal-case">View All</button>
               </div>
               <div className="p-4">
-                <div className="space-y-3">
-                  <ActivityItem time="07:22" title="Evidence collection completed" detail="3,241 files indexed" />
-                  <ActivityItem time="07:17" title="WhatsApp database detected" detail="/data/data/com.whatsapp/databases/" />
-                  <ActivityItem time="07:14" title="Acquisition started" detail="Read-only mode" />
-                  <ActivityItem time="07:12" title="Device connected" detail={`${clean(fullInfo?.manufacturer)} ${clean(fullInfo?.model)} (${serial})`} />
-                </div>
+                {activities.length === 0 ? (
+                  <div className="text-xs text-slate-500 text-center py-4">No activity yet — actions will appear here as you use the app</div>
+                ) : (
+                  <div className="space-y-3">
+                    {activities.slice(0, 10).map((a) => (
+                      <ActivityItem
+                        key={a.id}
+                        time={new Date(a.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        title={`${a.icon} ${a.title}`}
+                        detail={a.detail}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>

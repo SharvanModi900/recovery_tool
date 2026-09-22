@@ -936,10 +936,121 @@ pub fn acquire_whatsapp_chats(adb: &AdbClient, serial: &str) -> Result<Vec<Whats
 }
 
 /// Acquire WhatsApp call logs from device.
+///
+/// On Android 10+ the system call-log content provider records VoIP calls
+/// (WhatsApp, Signal, …) with `account_component` containing the package name.
+/// We query that first; if the device is older we fall back to scanning the
+/// WhatsApp database on shared storage.
 pub fn acquire_whatsapp_calls(adb: &AdbClient, serial: &str) -> Result<Vec<WhatsAppCall>> {
-    // WhatsApp calls are stored in the main database - for now return empty
-    // Deep analysis would require parsing msgstore.db
-    Ok(Vec::new())
+    let mut calls = Vec::new();
+
+    // ── 1) System call log filtered to WhatsApp account_component ────────
+    let cmd = "content query --uri content://call_log/calls \
+               --projection _id:number:name:type:duration:date:account_component";
+    let output = adb.exec_out(serial, &["sh", "-c", cmd]).unwrap_or_default();
+    let text = String::from_utf8_lossy(&output);
+
+    for line in text.lines() {
+        if !line.starts_with("Row:") { continue; }
+
+        let stripped = line.strip_prefix("Row: ").unwrap_or(line);
+        let after_num = stripped.split_once(' ').map(|(_, r)| r).unwrap_or(stripped);
+
+        let mut number = String::new();
+        let mut name: Option<String> = None;
+        let mut call_type: i32 = 0;
+        let mut duration: i64 = 0;
+        let mut timestamp: i64 = 0;
+        let mut account_component = String::new();
+
+        for part in after_num.split(", ") {
+            if let Some((key, val)) = part.split_once('=') {
+                let v = val.trim_matches('"');
+                match key.trim() {
+                    "number"          => number = v.to_string(),
+                    "name"            => name = if v == "null" { None } else { Some(v.to_string()) },
+                    "type"            => call_type = v.parse().unwrap_or(0),
+                    "duration"        => duration = v.parse().unwrap_or(0),
+                    "date"            => timestamp = v.parse().unwrap_or(0),
+                    "account_component" => account_component = v.to_string(),
+                    _ => {}
+                }
+            }
+        }
+
+        // Only keep rows whose account_component mentions WhatsApp
+        if !account_component.contains("whatsapp") && !account_component.contains("WhatsApp") {
+            continue;
+        }
+        if number.is_empty() && name.is_none() { continue; }
+
+        let ct = match call_type {
+            1 => "incoming",
+            2 => "outgoing",
+            3 => "missed",
+            _ => "unknown",
+        };
+
+        // Derive a JID from the phone number (WhatsApp format)
+        let digits: String = number.chars().filter(|c| c.is_ascii_digit()).collect();
+        let jid = if digits.len() >= 7 { format!("{}@s.whatsapp.net", digits) } else { number.clone() };
+
+        calls.push(WhatsAppCall {
+            jid,
+            name,
+            call_type: ct.to_string(),
+            duration,
+            timestamp,
+            source: "live".to_string(),
+        });
+    }
+
+    // ── 2) Fallback: scan WhatsApp msgstore.db on shared storage ─────────
+    //    If the call-log approach returned nothing, try the WhatsApp database
+    //    file directly (works only when the DB is unencrypted / accessible).
+    if calls.is_empty() {
+        let db_paths = [
+            "/sdcard/Android/media/com.whatsapp/WhatsApp/Databases/msgstore.db",
+            "/sdcard/WhatsApp/Databases/msgstore.db",
+        ];
+        for db_path in &db_paths {
+            let check = format!("ls -la {} 2>/dev/null", db_path);
+            let out = adb.exec_out(serial, &["sh", "-c", &check]).unwrap_or_default();
+            if !String::from_utf8_lossy(&out).contains("msgstore.db") { continue; }
+
+            // Try to read the calls table via sqlite3 on the device
+            let sql = format!(
+                "sqlite3 {} 'SELECT jid, call_type, duration, timestamp FROM calls ORDER BY timestamp DESC LIMIT 50;' 2>/dev/null",
+                db_path
+            );
+            let sql_out = adb.exec_out(serial, &["sh", "-c", &sql]).unwrap_or_default();
+            let sql_text = String::from_utf8_lossy(&sql_out);
+
+            for row in sql_text.lines() {
+                let parts: Vec<&str> = row.split('|').collect();
+                if parts.len() < 4 { continue; }
+                let jid = parts[0].to_string();
+                if jid.is_empty() { continue; }
+                let ct = match parts[1] {
+                    "1" | "incoming" => "incoming",
+                    "2" | "outgoing" => "outgoing",
+                    "3" | "missed"   => "missed",
+                    _                => "unknown",
+                };
+                calls.push(WhatsAppCall {
+                    jid,
+                    name: None,
+                    call_type: ct.to_string(),
+                    duration: parts[2].parse().unwrap_or(0),
+                    timestamp: parts[3].parse().unwrap_or(0),
+                    source: "live".to_string(),
+                });
+            }
+            if !calls.is_empty() { break; }
+        }
+    }
+
+    Ok(calls)
 }
 
 /// Acquire calendar events from Android content providers.

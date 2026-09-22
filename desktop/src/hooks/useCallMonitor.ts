@@ -120,7 +120,7 @@ export function useCallMonitor({ serial, setStatus, setError }: UseCallMonitorAr
           const sig = `${event.event_type}|${event.phone_number || ""}`;
           if (lastLiveSigRef.current === sig) return;
           lastLiveSigRef.current = sig;
-          if (event.event_type === "Incoming") playBellSound();
+          if (event.event_type === "Incoming" || event.event_type === "Outgoing") playBellSound();
           setCallEvents((prev) => [...prev, event].slice(-100));
           return;
         }

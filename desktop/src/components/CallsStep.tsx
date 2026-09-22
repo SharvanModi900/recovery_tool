@@ -1,8 +1,7 @@
 import { useState } from "react";
-import type { CallEvent, CallRecording, CallLog, WhatsAppCall } from "../types";
+import type { CallEvent, CallRecording, CallLog, WhatsAppCall, Step } from "../types";
 import { fmtTime } from "../types";
-
-type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
+import { DataStepLayout, EmptyState, ConnectPrompt } from "./DataStepLayout";
 
 interface CallsStepProps {
   serial: string;
@@ -38,12 +37,15 @@ export function CallsStep({ serial, callEvents, callRecordings, directData, call
     (c.jid || "").toLowerCase().includes(lf) || (c.name || "").toLowerCase().includes(lf)
   );
 
-  const tabs: { key: Tab; label: string; icon: string; count: number }[] = [
-    { key: "logs", label: "Call Logs", icon: "📋", count: callLogs.length },
-    { key: "recordings", label: "Recordings", icon: "🎙", count: callRecordings.length },
-    { key: "monitor", label: "Live Monitor", icon: "📡", count: callEvents.length },
-    { key: "wa_calls", label: "WhatsApp Calls", icon: "📞", count: waCalls.length },
+  const tabs = [
+    { key: "logs" as const, label: "Call Logs", icon: "📋", count: callLogs.length },
+    { key: "recordings" as const, label: "Recordings", icon: "🎙", count: callRecordings.length },
+    { key: "monitor" as const, label: "Live Monitor", icon: "📡", count: callEvents.length,
+      badge: tab === "monitor" && callMonitorActive ? <span className="live-dot" style={{ marginLeft: 4 }}>●</span> : undefined },
+    { key: "wa_calls" as const, label: "WhatsApp Calls", icon: "📞", count: waCalls.length },
   ];
+
+  const hint = `${callLogs.length} logs · ${callRecordings.length} recordings · ${callEvents.length} monitored${waCalls.length > 0 ? ` · ${waCalls.length} WA` : ""}`;
 
   const callTypeIcon = (t: string) => {
     switch (t.toLowerCase()) {
@@ -56,150 +58,111 @@ export function CallsStep({ serial, callEvents, callRecordings, directData, call
   };
 
   return (
-    <section style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <div className="panel">
-        <div className="panel-bar">
-          📞 Calls
-          <span className="sep" />
-          <span className="hint">
-            {callLogs.length} logs · {callRecordings.length} recordings · {callEvents.length} monitored{waCalls.length > 0 ? ` · ${waCalls.length} WA` : ""}
-          </span>
-          <input
-            type="text"
-            placeholder="Filter calls…"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            style={{
-              marginLeft: "auto", padding: "4px 10px", fontSize: 11,
-              background: "var(--bg-primary)", border: "1px solid var(--border)",
-              borderRadius: 4, color: "var(--text-primary)", width: 200,
-            }}
-          />
-        </div>
-
-        <div className="fx-tabs">
-          {tabs.map((t) => (
-            <button key={t.key} className={`fx-tab${tab === t.key ? " active" : ""}`} onClick={() => setTab(t.key)}>
-              {t.icon} {t.label}
-              {t.count > 0 && <span className="fx-tab-count">{t.count}</span>}
-              {t.key === "monitor" && callMonitorActive && <span className="live-dot" style={{ marginLeft: 4 }}>●</span>}
-            </button>
-          ))}
-        </div>
-
-        <div className="panel-body" style={{ overflow: "auto" }}>
-          {!serial ? (
-            <div className="fx-empty">
-              <span className="fx-empty-icon">📱</span>
-              <span className="fx-empty-text">Connect a device to view call data</span>
-            </div>
-          ) : tab === "logs" ? (
-            callLogs.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">📋</span>
-                <span className="fx-empty-text">No call logs — run direct acquisition from Overview to populate</span>
-                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
-              </div>
-            ) : (
-              <div className="fx-scroll">
-                <table className="fx-table">
-                  <thead><tr><th></th><th>Number</th><th>Name</th><th>Type</th><th>Duration</th><th>Time</th></tr></thead>
-                  <tbody>
-                    {filteredLogs.map((c) => (
-                      <tr key={c.id}>
-                        <td>{callTypeIcon(c.call_type)}</td>
-                        <td className="mono">{c.number}</td>
-                        <td style={{ fontWeight: 600 }}>{c.name || "—"}</td>
-                        <td><span className={`fx-row-label ${c.call_type === "Incoming" ? "fx-cat-call" : c.call_type === "Missed" ? "fx-cat-notification" : "fx-cat-power"}`}>{c.call_type}</span></td>
-                        <td>{c.duration > 0 ? `${c.duration}s` : "—"}</td>
-                        <td style={{ whiteSpace: "nowrap" }}>{fmtTime(c.timestamp)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          ) : tab === "recordings" ? (
-            callRecordings.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">🎙</span>
-                <span className="fx-empty-text">No call recordings found — start call monitor to capture recordings</span>
-              </div>
-            ) : (
-              <div className="fx-scroll">
-                <table className="fx-table">
-                  <thead><tr><th>Filename</th><th>Matched Contact</th><th>Matched Number</th><th>Type</th><th>Size</th><th>Time</th></tr></thead>
-                  <tbody>
-                    {filteredRecs.map((r, i) => (
-                      <tr key={i}>
-                        <td className="mono" style={{ fontSize: 10.5 }}>{r.filename}</td>
-                        <td style={{ fontWeight: 600 }}>{r.matched_name || "—"}</td>
-                        <td className="mono">{r.matched_number || "—"}</td>
-                        <td>{r.matched_call_type || "—"}</td>
-                        <td>{r.size > 0 ? `${(r.size / 1024).toFixed(0)} KB` : "—"}</td>
-                        <td style={{ whiteSpace: "nowrap" }}>{fmtTime(r.timestamp)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          ) : tab === "monitor" ? (
-            callEvents.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">📡</span>
-                <span className="fx-empty-text">{callMonitorActive ? "Monitoring active — waiting for call events…" : "Call monitor not active — start it from Overview → Calls tab"}</span>
-                {!callMonitorActive && <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>}
-              </div>
-            ) : (
-              <div className="fx-scroll fx-list">
-                {filteredEvents.map((e, i) => (
-                  <div key={i} className="fx-row">
-                    <span className="fx-row-icon">{callTypeIcon(e.event_type)}</span>
-                    <span className={`fx-row-label ${e.event_type === "Incoming" || e.event_type === "Outgoing" ? "fx-cat-call" : e.event_type === "Missed" ? "fx-cat-notification" : "fx-cat-power"}`}>
-                      {e.event_type}
-                    </span>
-                    <div className="fx-row-content">
-                      <span className="fx-row-title">{e.contact_name || e.phone_number || "Unknown"}</span>
-                      {e.duration != null && e.duration > 0 && <span className="fx-row-detail"> — {e.duration}s</span>}
-                    </div>
-                    <span className="fx-row-time">{fmtTime(e.timestamp)}</span>
-                  </div>
+    <DataStepLayout
+      title="📞 Calls"
+      hint={hint}
+      filter={filter}
+      onFilterChange={setFilter}
+      filterPlaceholder="Filter calls…"
+      tabs={tabs}
+      activeTab={tab}
+      onTabChange={(k) => setTab(k as Tab)}
+      nav={<>
+        <button className="mini" onClick={() => onGoTo("messages")}>← Messages</button>
+        <button className="mini" onClick={() => onGoTo("contacts")}>Contacts →</button>
+      </>}
+    >
+      {!serial ? (
+        <ConnectPrompt onGoTo={onGoTo} />
+      ) : tab === "logs" ? (
+        callLogs.length === 0 ? (
+          <EmptyState icon="📋" text="No call logs — run direct acquisition from Overview to populate" cta={{ label: "Go to Overview", target: "connect", onGoTo }} />
+        ) : (
+          <div className="fx-scroll">
+            <table className="fx-table">
+              <thead><tr><th></th><th>Number</th><th>Name</th><th>Type</th><th>Duration</th><th>Time</th></tr></thead>
+              <tbody>
+                {filteredLogs.map((c) => (
+                  <tr key={c.id}>
+                    <td>{callTypeIcon(c.call_type)}</td>
+                    <td className="mono">{c.number}</td>
+                    <td style={{ fontWeight: 600 }}>{c.name || "—"}</td>
+                    <td><span className={`fx-row-label ${c.call_type === "Incoming" ? "fx-cat-call" : c.call_type === "Missed" ? "fx-cat-notification" : "fx-cat-power"}`}>{c.call_type}</span></td>
+                    <td>{c.duration > 0 ? `${c.duration}s` : "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtTime(c.timestamp)}</td>
+                  </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : tab === "recordings" ? (
+        callRecordings.length === 0 ? (
+          <EmptyState icon="🎙" text="No call recordings found — start call monitor to capture recordings" />
+        ) : (
+          <div className="fx-scroll">
+            <table className="fx-table">
+              <thead><tr><th>Filename</th><th>Matched Contact</th><th>Matched Number</th><th>Type</th><th>Size</th><th>Time</th></tr></thead>
+              <tbody>
+                {filteredRecs.map((r, i) => (
+                  <tr key={i}>
+                    <td className="mono" style={{ fontSize: 10.5 }}>{r.filename}</td>
+                    <td style={{ fontWeight: 600 }}>{r.matched_name || "—"}</td>
+                    <td className="mono">{r.matched_number || "—"}</td>
+                    <td>{r.matched_call_type || "—"}</td>
+                    <td>{r.size > 0 ? `${(r.size / 1024).toFixed(0)} KB` : "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtTime(r.timestamp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : tab === "monitor" ? (
+        callEvents.length === 0 ? (
+          <EmptyState
+            icon="📡"
+            text={callMonitorActive ? "Monitoring active — waiting for call events…" : "Call monitor not active — start it from Overview → Calls tab"}
+            cta={!callMonitorActive ? { label: "Go to Overview", target: "connect", onGoTo } : undefined}
+          />
+        ) : (
+          <div className="fx-scroll fx-list">
+            {filteredEvents.map((e, i) => (
+              <div key={i} className="fx-row">
+                <span className="fx-row-icon">{callTypeIcon(e.event_type)}</span>
+                <span className={`fx-row-label ${e.event_type === "Incoming" || e.event_type === "Outgoing" ? "fx-cat-call" : e.event_type === "Missed" ? "fx-cat-notification" : "fx-cat-power"}`}>
+                  {e.event_type}
+                </span>
+                <div className="fx-row-content">
+                  <span className="fx-row-title">{e.contact_name || e.phone_number || "Unknown"}</span>
+                  {e.duration != null && e.duration > 0 && <span className="fx-row-detail"> — {e.duration}s</span>}
+                </div>
+                <span className="fx-row-time">{fmtTime(e.timestamp)}</span>
               </div>
-            )
-          ) : (
-            waCalls.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">📞</span>
-                <span className="fx-empty-text">No WhatsApp call records — run direct acquisition from Overview</span>
-                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
-              </div>
-            ) : (
-              <div className="fx-scroll">
-                <table className="fx-table">
-                  <thead><tr><th>Contact</th><th>Type</th><th>Duration</th><th>Time</th></tr></thead>
-                  <tbody>
-                    {filteredWaCalls.map((c, i) => (
-                      <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{c.name || c.jid}</td>
-                        <td><span className={`fx-row-label ${c.call_type === "incoming" ? "fx-cat-call" : "fx-cat-power"}`}>{c.call_type}</span></td>
-                        <td>{c.duration > 0 ? `${c.duration}s` : "—"}</td>
-                        <td style={{ whiteSpace: "nowrap" }}>{fmtTime(c.timestamp)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          )}
-        </div>
-
-        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-          <button className="mini" onClick={() => onGoTo("messages")}>← Messages</button>
-          <button className="mini" onClick={() => onGoTo("contacts")}>Contacts →</button>
-        </div>
-      </div>
-    </section>
+            ))}
+          </div>
+        )
+      ) : (
+        waCalls.length === 0 ? (
+          <EmptyState icon="📞" text="No WhatsApp call records — run direct acquisition from Overview" cta={{ label: "Go to Overview", target: "connect", onGoTo }} />
+        ) : (
+          <div className="fx-scroll">
+            <table className="fx-table">
+              <thead><tr><th>Contact</th><th>Type</th><th>Duration</th><th>Time</th></tr></thead>
+              <tbody>
+                {filteredWaCalls.map((c, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 600 }}>{c.name || c.jid}</td>
+                    <td><span className={`fx-row-label ${c.call_type === "incoming" ? "fx-cat-call" : "fx-cat-power"}`}>{c.call_type}</span></td>
+                    <td>{c.duration > 0 ? `${c.duration}s` : "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtTime(c.timestamp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+    </DataStepLayout>
   );
 }

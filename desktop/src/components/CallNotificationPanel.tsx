@@ -84,12 +84,24 @@ export function CallNotificationPanel({ callEvents, onClear }: CallNotificationP
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span>
-                      {event.event_type === "Incoming" ? "📞" :
+                      {event.source === "whatsapp" ? "💬" :
+                       event.event_type === "Incoming" ? "📞" :
                        event.event_type === "Outgoing" ? "📱" :
                        event.event_type === "Missed" ? "❌" :
                        event.event_type === "Ended" ? "☎️" : "📞"}
                     </span>
                     <strong style={{ color: "#3a2e1f" }}>{event.event_type}</strong>
+                    {event.source === "whatsapp" && (
+                      <span style={{
+                        background: "#25D366",
+                        color: "white",
+                        borderRadius: 4,
+                        padding: "0 4px",
+                        fontSize: 9,
+                        fontWeight: 600,
+                        lineHeight: "16px"
+                      }}>WhatsApp</span>
+                    )}
                     <span style={{ marginLeft: "auto", fontSize: 10, color: "#8a7a60" }}>
                       {new Date(event.timestamp).toLocaleTimeString()}
                     </span>

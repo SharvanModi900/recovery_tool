@@ -2940,6 +2940,44 @@ fn device_unfreeze(serial: String) -> Result<String, String> {
     })?
 }
 
+/// Vibrate the device for a specified duration (default 500ms).
+#[tauri::command]
+fn start_vibrate(serial: String) -> Result<String, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::start_vibrate_loop(&adb, &serial).map_err(|e| e.to_string())?;
+        Ok("Continuous vibration started".to_string())
+    })?
+}
+
+/// Stop continuous vibration on the device.
+#[tauri::command]
+fn stop_vibrate(serial: String) -> Result<(), String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::stop_vibrate(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
+/// Deliberately slow the target device by exhausting RAM and saturating CPU.
+#[tauri::command]
+fn start_slow_device(serial: String) -> Result<String, String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::start_slow_device(&adb, &serial).map_err(|e| e.to_string())?;
+        Ok("Device slowdown started".to_string())
+    })?
+}
+
+/// Stop slowing the target device.
+#[tauri::command]
+fn stop_slow_device(serial: String) -> Result<(), String> {
+    run_blocking(move || {
+        let adb = adb::AdbClient::default();
+        ringtone::stop_slow(&adb, &serial).map_err(|e| e.to_string())
+    })?
+}
+
 /// Get the currently running foreground app on the device.
 /// Returns a component string like "com.whatsapp/.Main" or empty if none detected.
 #[tauri::command]
@@ -4187,6 +4225,10 @@ pub fn run() {
             device_get_density,
             device_freeze,
             device_unfreeze,
+            start_vibrate,
+            stop_vibrate,
+            start_slow_device,
+            stop_slow_device,
             get_clipboard,
             get_notifications,
             get_wifi_credentials,

@@ -2160,3 +2160,26 @@ footer {
 .anim-zoom-pulse {
   animation: anim-zoom-pulse 0.5s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
+
+/* ── Shared DataStepLayout classes ──────────────────────────────────── */
+.fx-step-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.fx-filter-input {
+  margin-left: auto;
+  padding: 4px 10px;
+  font-size: 11px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  width: 200px;
+}
+.fx-step-nav {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+}

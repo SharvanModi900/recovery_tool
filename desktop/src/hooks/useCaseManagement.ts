@@ -1,9 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import * as api from "../api";
-import type { Case, CaseSummary, EvidenceItem, AuditEntry } from "../types";
+import type { Case, CaseSummary, EvidenceItem, AuditEntry, Step } from "../types";
 
-type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 interface UseCaseManagementArgs {
   serial: string;

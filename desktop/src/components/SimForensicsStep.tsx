@@ -1,6 +1,6 @@
-import type { SimSnapshot, HistoricalSim, SimSwapVerdict } from "../types";
+import type { SimSnapshot, HistoricalSim, SimSwapVerdict, Step } from "../types";
+import { StepNav } from "./DataStepLayout";
 
-type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
 
 interface SimForensicsStepProps {
   serial: string;
@@ -123,10 +123,10 @@ export function SimForensicsStep({
             </>
           )}
 
-          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-            <button className="mini" onClick={() => onGoTo("contacts")}>← Contacts</button>
-            <button className="mini" onClick={() => onGoTo("forensics")}>Forensics →</button>
-          </div>
+          <StepNav buttons={[
+            { label: "← Contacts", target: "contacts" },
+            { label: "Forensics →", target: "forensics" },
+          ]} onGoTo={onGoTo} />
         </div>
       </div>
     </section>

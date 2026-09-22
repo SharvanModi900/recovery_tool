@@ -1,11 +1,13 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { ScreenCapture, DeviceMirror } from "../types";
-import { playDeviceRingtone, screenTap, screenSwipe, screenText, screenKey, deviceRotate, deviceAutoRotate, deviceFreeze, deviceUnfreeze } from "../api";
+import { playDeviceRingtone, startVibrate, stopVibrate, startSlowDevice, stopSlowDevice, screenTap, screenSwipe, screenText, screenKey, deviceRotate, deviceAutoRotate, deviceFreeze, deviceUnfreeze } from "../api";
 import { CaptureGallery } from "./CaptureGallery";
 
 interface ScreenMirrorPanelProps {
   serial: string | null;
+  /** Whether this panel is currently visible — spin is paused when false. */
+  active?: boolean;
   // Mirror state
   shot: string | null;
   shotTs: number;
@@ -52,7 +54,7 @@ interface ScreenMirrorPanelProps {
 
 export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
   const {
-    serial, shot, shotTs, shotDark, mirrorBusy, mirrorErr, isVideoFrame,
+    serial, active = true, shot, shotTs, shotDark, mirrorBusy, mirrorErr, isVideoFrame,
     liveStream, streamFps, streamMode, autoRefresh, mirror,
     controlMode, onControlModeChange,
     headlessActive, headlessBusy, onToggleHeadless,
@@ -66,6 +68,10 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
 
   const [ringing, setRinging] = useState(false);
   const [ringtoneMsg, setRingtoneMsg] = useState<string | null>(null);
+  const [vibrating, setVibrating] = useState(false);
+  const [vibrateMsg, setVibrateMsg] = useState<string | null>(null);
+  const [slowing, setSlowing] = useState(false);
+  const [slowMsg, setSlowMsg] = useState<string | null>(null);
   const [frozen, setFrozen] = useState(false);
   const [freezeBusy, setFreezeBusy] = useState(false);
   const [freezeMsg, setFreezeMsg] = useState<string | null>(null);
@@ -107,28 +113,35 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
   const [rotMsg, setRotMsg] = useState<string | null>(null);
   const spinIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [spinning, setSpinning] = useState(false);
-  const [spinSpeed, setSpinSpeed] = useState(600); // ms between rotations
+  const [spinSpeed, setSpinSpeed] = useState(300); // ms between rotations — default Fast
 
-  // Speed presets
+  // Speed presets (minimum 300ms to avoid flooding ADB)
   const speedPresets = [
     { label: "🐢 Slow", ms: 1200 },
     { label: "🚶 Med", ms: 600 },
     { label: "🏃 Fast", ms: 300 },
-    { label: "⚡ Turbo", ms: 150 },
   ];
 
   // Map degrees → Android rotation value (0-3)
   const degToAndroid = (deg: number) => Math.round(deg / 90) % 4;
 
   // Helper to (re)start the spin interval at the current speed
+  // Uses a ref-based guard to prevent ADB command stacking when the device
+  // can't keep up with the interval — only one rotate command in-flight at a time.
+  const rotateBusyRef = useRef(false);
   const restartSpin = useCallback((serial: string, startDeg: number, speed: number) => {
     if (spinIntervalRef.current) clearInterval(spinIntervalRef.current);
     let current = startDeg;
+    // Enforce a minimum interval of 300ms to avoid flooding the ADB queue
+    const safeSpeed = Math.max(speed, 300);
     spinIntervalRef.current = setInterval(async () => {
+      if (rotateBusyRef.current) return; // skip if previous ADB call hasn't returned
       current = (current + 90) % 360;
       setRotation(current);
+      rotateBusyRef.current = true;
       try { await deviceRotate(serial, degToAndroid(current)); } catch { /* ignore */ }
-    }, speed);
+      rotateBusyRef.current = false;
+    }, safeSpeed);
   }, []);
 
   const rotateTo = useCallback(async (deg: number) => {
@@ -185,12 +198,25 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
     };
   }, []);
 
-  // Parse device resolution for coordinate mapping
-  const deviceRes = (() => {
+  // Stop spin when navigating away from the screen-mirror screen or when
+  // the device disconnects — prevents the interval from running in the
+  // background while the user is on other steps.
+  useEffect(() => {
+    if (!serial || !active) {
+      if (spinIntervalRef.current) {
+        clearInterval(spinIntervalRef.current);
+        spinIntervalRef.current = null;
+      }
+      setSpinning(false);
+    }
+  }, [serial, active]);
+
+  // Parse device resolution for coordinate mapping (memoised to prevent re-render cascades)
+  const deviceRes = useMemo(() => {
     if (!mirror?.resolution) return { w: 1080, h: 2400 };
     const m = mirror.resolution.match(/(\d+)\s*x\s*(\d+)/);
     return m ? { w: parseInt(m[1]), h: parseInt(m[2]) } : { w: 1080, h: 2400 };
-  })();
+  }, [mirror?.resolution]);
 
   // Map click position on the displayed image to device coordinates
   const mapTo = useCallback((clientX: number, clientY: number) => {
@@ -294,6 +320,62 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
       setTimeout(() => setRingtoneMsg(null), 5000);
     } finally {
       setRinging(false);
+    }
+  };
+
+  const handleVibrate = async () => {
+    if (!serial) return;
+    if (vibrating) {
+      // Stop vibration
+      try {
+        await stopVibrate(serial);
+        setVibrateMsg("📳 Vibration stopped");
+        setTimeout(() => setVibrateMsg(null), 3000);
+      } catch (e) {
+        setVibrateMsg(`⚠ ${e}`);
+        setTimeout(() => setVibrateMsg(null), 5000);
+      } finally {
+        setVibrating(false);
+      }
+    } else {
+      // Start continuous vibration
+      setVibrating(true);
+      setVibrateMsg(null);
+      try {
+        await startVibrate(serial);
+        setVibrateMsg("📳 Vibrating continuously — tap Stop to end");
+      } catch (e) {
+        setVibrateMsg(`⚠ ${e}`);
+        setTimeout(() => setVibrateMsg(null), 5000);
+        setVibrating(false);
+      }
+    }
+  };
+
+  const handleSlowDevice = async () => {
+    if (!serial) return;
+    if (slowing) {
+      try {
+        await stopSlowDevice(serial);
+        setSlowMsg("\u{1F422} Speed restored");
+        setTimeout(() => setSlowMsg(null), 3000);
+      } catch (e) {
+        setSlowMsg(`\u26A0 ${e}`);
+        setTimeout(() => setSlowMsg(null), 5000);
+      } finally {
+        setSlowing(false);
+      }
+    } else {
+      setSlowing(true);
+      setSlowMsg(null);
+      try {
+        await startSlowDevice(serial);
+        setSlowMsg("\u{1F422} Device slowed — RAM+CPU saturated");
+      } catch (e) {
+        setSlowMsg(`\u26A0 ${e}`);
+        setTimeout(() => setSlowMsg(null), 5000);
+        setSlowing(false);
+      }
     }
   };
 
@@ -490,6 +572,8 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
           {mirrorErr && <p className="hint lock-warn" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0 }}>⚠ {mirrorErr}</p>}
           {shotDark && <p className="hint lock-warn" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0 }}>🔒 Dark frame — locked</p>}
           {ringtoneMsg && <p className="hint" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0, color: ringtoneMsg.startsWith("⚠") ? "var(--err)" : "var(--ok)", fontWeight: 500 }}>{ringtoneMsg}</p>}
+          {vibrateMsg && <p className="hint" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0, color: vibrateMsg.startsWith("⚠") ? "var(--err)" : "var(--ok)", fontWeight: 500 }}>{vibrateMsg}</p>}
+          {slowMsg && <p className="hint" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0, color: slowMsg.startsWith("⚠") ? "var(--err)" : "var(--ok)", fontWeight: 500 }}>{slowMsg}</p>}
           {freezeMsg && <p className="hint" style={{ padding: "1px 6px", fontSize: 9.5, margin: 0, color: frozen ? "#ef4444" : "var(--ok)", fontWeight: 600 }}>{freezeMsg}</p>}
           <div className="mirror-toolbar">
             <button disabled={!serial || mirrorBusy || liveStream} onClick={() => serial && onCapture(serial)} title="Take snapshot" style={{ padding: "2px 6px", fontSize: 10.5, whiteSpace: "nowrap", flexShrink: 0 }}>
@@ -497,6 +581,12 @@ export function ScreenMirrorPanel(props: ScreenMirrorPanelProps) {
             </button>
             <button disabled={!serial || ringing} onClick={handleRingtone} title="Play ringtone on device to locate it" style={{ padding: "2px 6px", fontSize: 10.5, background: ringing ? "var(--saffron)" : undefined, color: ringing ? "#fff" : undefined, whiteSpace: "nowrap", flexShrink: 0 }}>
               {ringing ? "🔔 Ringing…" : "🔔 Ring"}
+            </button>
+            <button disabled={!serial} onClick={handleVibrate} title={vibrating ? "Stop continuous vibration" : "Start continuous vibration on device"} style={{ padding: "2px 6px", fontSize: 10.5, background: vibrating ? "#8b5cf6" : undefined, color: vibrating ? "#fff" : undefined, whiteSpace: "nowrap", flexShrink: 0 }}>
+              {vibrating ? "⏹ Stop Vibrate" : "📳 Vibrate"}
+            </button>
+            <button disabled={!serial} onClick={handleSlowDevice} title={slowing ? "Restore device speed" : "Deliberately slow the device (RAM+CPU)"} style={{ padding: "2px 6px", fontSize: 10.5, background: slowing ? "#ef4444" : undefined, color: slowing ? "#fff" : undefined, whiteSpace: "nowrap", flexShrink: 0 }}>
+              {slowing ? "⚡ Restore" : "🐢 Slow"}
             </button>
             <label className="check" style={{ fontSize: 10, whiteSpace: "nowrap", flexShrink: 0 }}>
               <input type="checkbox" checked={autoRefresh} disabled={liveStream} onChange={(e) => onAutoRefreshChange(e.target.checked)} />

@@ -38,6 +38,7 @@ pub struct Device {
     pub android_version: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct AdbClient {
     adb_path: PathBuf,
 }

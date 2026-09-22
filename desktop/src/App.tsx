@@ -3,13 +3,14 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { listen } from "@tauri-apps/api/event";
 import * as api from "./api";
-import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult, InstagramData, MessengerData, TelegramData, ForensicExtraction } from "./types";
+import type { AppInfo, Device, DeviceMirror, MediaFile, MediaInspect, MediaRecovery, ScanReport, UiRecovery, DirectAcquisition, AppInventory, WhatsAppDeepResult, RootCheckResult, InstagramData, MessengerData, TelegramData, ForensicExtraction, Step, CallEvent } from "./types";
 import { fmtSize } from "./types";
-import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, ForensicsStep, DeviceToolsStep, MessagesStep, CallsStep, ContactsStep, SimForensicsStep, DebugConsole, StandaloneTimeline, ScreenMirrorPanel, DeletedPhotoGallery } from "./components";
+import { DirectDataViewer, ExportStep, ScanStep, MediaStep, AppsStep, CaseStep, RecoverStep, ConnectStep, ForensicsStep, DeviceToolsStep, MessagesStep, CallsStep, ContactsStep, SimForensicsStep, DebugConsole, StandaloneTimeline, ScreenMirrorPanel, DeletedPhotoGallery, CallNotificationPanel } from "./components";
 import { useDeviceMirror } from "./hooks/useDeviceMirror";
 import { useCallMonitor } from "./hooks/useCallMonitor";
 import { useSimForensics } from "./hooks/useSimForensics";
 import { useCaseManagement } from "./hooks/useCaseManagement";
+import { useActivityLog } from "./hooks/useActivityLog";
 
 // Per-device session state for multi-device support
 export interface DeviceSession {
@@ -103,7 +104,7 @@ const createEmptySession = (serial: string, model: string = ""): DeviceSession =
   exportBusy: false,
 });
 
-type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
+
 
 export default function App() {
   const [step, setStep] = useState<Step>("connect");
@@ -143,6 +144,7 @@ export default function App() {
       return next;
     });
     setActiveSerial(serial);
+    activityLog.log("🔌", "Device connected", model || serial);
   }, []);
   
   // Close a device session
@@ -253,11 +255,33 @@ export default function App() {
   } = useDeviceMirror({ serial, step, setStatus, setError });
 
   const {
-    callMonitorActive, callEvents, currentCallNotification,
+    callMonitorActive, callEvents, setCallEvents, currentCallNotification,
     callRecordings, playingRec, timeline,
     startCallMonitor, stopCallMonitor, loadCallRecordings,
     playRecording, setPlayingRec, playBellSound,
   } = useCallMonitor({ serial, setStatus, setError });
+
+  // Merge live call-monitor events with WhatsApp call records so the bell
+  // notification panel shows both regular and WhatsApp calls.
+  const allCallNotifications = useMemo(() => {
+    const waEvents: CallEvent[] = (directData?.whatsapp_calls ?? []).map((wa) => ({
+      timestamp: wa.timestamp,
+      event_type: wa.call_type === "incoming" ? "Incoming" as const
+                : wa.call_type === "outgoing" ? "Outgoing" as const
+                : wa.call_type === "missed"   ? "Missed"   as const
+                : "Unknown" as const,
+      phone_number: wa.jid.includes("@") ? wa.jid.split("@")[0] : wa.jid,
+      contact_name: wa.name ?? null,
+      duration: wa.duration > 0 ? wa.duration : null,
+      sim_slot: null,
+      source: "whatsapp",
+    }));
+    if (waEvents.length === 0) return callEvents;
+    // Combine, deduplicate by timestamp proximity, sort newest-first
+    const combined = [...callEvents, ...waEvents];
+    combined.sort((a, b) => b.timestamp - a.timestamp);
+    return combined;
+  }, [callEvents, directData]);
 
   const {
     simSnapshot, simBaseline, simHistorical, simVerdict, simHistory, simBusy,
@@ -272,6 +296,8 @@ export default function App() {
     handleExportCase, handleCloseCase, handleDeleteCase,
     setCaseForm, setCaseEvidenceFilter, loadCases,
   } = useCaseManagement({ serial, deviceModel: activeSession?.model, step, setStep, setStatus, setError });
+
+  const activityLog = useActivityLog();
 
   const run = useCallback(
     async <T,>(fn: () => Promise<T>, ok?: string): Promise<T | undefined> => {
@@ -312,6 +338,7 @@ export default function App() {
 
   const doScanDevice = (pull: boolean) =>
     run(async () => {
+      activityLog.log("🔍", "Device scan started", pull ? "Scanning & pulling artifacts" : "Scan only (no pull)");
       const [rep, pulled] = await api.scanDevice(serial, pull, includeMedia);
       setReport(rep);
       if (pulled.length) {
@@ -321,6 +348,7 @@ export default function App() {
           ?? pulled.find((p) => /\.crypt\d+$/i.test(p));
         if (crypt) setCryptPath(crypt);
       }
+      activityLog.log("✅", "Scan completed", `${rep.artifacts.length} artifacts found, ${pulled.length} files pulled`);
       return rep;
     }, pull ? `Scanned & pulled artifacts from ${serial}` : `Scanned ${serial}`);
 
@@ -475,10 +503,16 @@ export default function App() {
   const doDirectAcquisition = () =>
     run(async () => {
       setDirectBusy(true);
+      activityLog.log("📥", "Acquisition started", "Read-only mode");
       try {
         const data = await api.directAcquisition(serial);
         setDirectData(data);
-        setStatus(`Direct acquisition complete — ${data.call_logs.length} calls, ${data.sms_messages.length} SMS, ${data.contacts.length} contacts, ${data.call_recordings.length} recordings, ${data.whatsapp_media.length} WA media, ${data.calendar_events.length} calendar`);
+        const summary = `${data.call_logs.length} calls, ${data.sms_messages.length} SMS, ${data.contacts.length} contacts, ${data.call_recordings.length} recordings`;
+        setStatus(`Direct acquisition complete — ${summary}`);
+        activityLog.log("✅", "Acquisition completed", summary);
+        if (data.whatsapp_calls.length > 0) {
+          activityLog.log("💬", "WhatsApp calls found", `${data.whatsapp_calls.length} call records`);
+        }
         return data;
       } finally {
         setDirectBusy(false);
@@ -509,6 +543,7 @@ export default function App() {
   const doWhatsappDeep = () =>
     run(async () => {
       setWaDeepBusy(true);
+      activityLog.log("💬", "WhatsApp deep extraction started", serial);
       try {
         const data = await api.extractWhatsappDeep(serial);
         setWaDeepResult(data);
@@ -516,6 +551,9 @@ export default function App() {
           ? `WhatsApp deep extraction complete — ${data.total_messages} messages, ${data.total_contacts} chats, ${data.media_with_contacts.length} media files`
           : `WhatsApp: ${data.key_obtained ? "Key obtained" : "No key"}, ${data.crypt_file_path ? "database found" : "no database"} — ${data.notes.join(", ")}`;
         setStatus(status);
+        activityLog.log(data.database_decrypted ? "✅" : "⚠️",
+          data.database_decrypted ? "WhatsApp extraction complete" : "WhatsApp extraction partial",
+          data.database_decrypted ? `${data.total_messages} messages, ${data.total_contacts} chats` : data.notes.join(", ").slice(0, 80));
         return data;
       } finally {
         setWaDeepBusy(false);
@@ -531,6 +569,9 @@ export default function App() {
         setStatus(data.has_root 
           ? `Root access confirmed${data.can_read_whatsapp_key ? " — WhatsApp key accessible" : ""}`
           : "No root access — WhatsApp key extraction requires root");
+        activityLog.log(data.has_root ? "🔓" : "🔒",
+          data.has_root ? "Root access confirmed" : "No root access",
+          data.has_root && data.can_read_whatsapp_key ? "WhatsApp key accessible" : "Limited extraction capabilities");
         return data;
       } finally {
         setRootBusy(false);
@@ -927,8 +968,10 @@ export default function App() {
         filters: [{ name: format.toUpperCase(), extensions: [ext] }],
       });
       if (!dest) return;
+      activityLog.log("📤", "Export started", `${format.toUpperCase()} format`);
       const path = await api.exportResult(format, dest as string);
       setExportedPath(path);
+      activityLog.log("✅", "Export completed", path);
       return path;
     }, "Export complete");
 
@@ -959,6 +1002,40 @@ export default function App() {
   const cryptArtifacts = report?.artifacts.filter((a) => a.kind === "backup") ?? [];
 
   // ----- Render -----------------------------------------------------------
+
+  // Screen mirror — created once, shared across Connect and Apps steps
+  const screenMirrorNode = serial ? (
+    <ScreenMirrorPanel
+      serial={serial}
+      active={step === "connect" || step === "apps"}
+      shot={shot} shotTs={shotTs} shotDark={shotDark}
+      mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
+      liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
+      autoRefresh={autoRefresh}
+      mirror={mirror}
+      captures={captures} captureBusy={captureBusy}
+      autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
+      onCapture={capture}
+      onStartStream={startStream}
+      onStopStream={stopStream}
+      onTakeScreenshot={takeScreenshot}
+      onStartAuto={startAutoCaptureHandler}
+      onStopAuto={stopAutoCaptureHandler}
+      onIntervalChange={setCaptureInterval}
+      onRefreshCaptures={loadCaptures}
+      onDeleteCapture={deleteCapture}
+      onAutoRefreshChange={setAutoRefresh}
+      onStreamFpsChange={setStreamFps}
+      onStreamModeChange={setStreamMode}
+      controlMode={controlMode}
+      onControlModeChange={setControlMode}
+      headlessActive={headlessActive}
+      headlessBusy={headlessBusy}
+      onToggleHeadless={toggleHeadless}
+      paused={paused}
+      onPausedChange={setPaused}
+    />
+  ) : null;
 
   return (
     <div className="app">
@@ -1010,6 +1087,10 @@ export default function App() {
               <polyline points="21 15 16 10 5 21"/>
             </svg>
           </button>
+          <CallNotificationPanel
+            callEvents={allCallNotifications}
+            onClear={() => setCallEvents([])}
+          />
           <div className="user-avatar">SK</div>
         </div>
       </header>
@@ -1228,23 +1309,9 @@ export default function App() {
             onStartMonitor={startCallMonitor} onStopMonitor={stopCallMonitor}
             onLoadRecordings={loadCallRecordings}
             onPlayRecording={playRecording} onStopPlaying={() => setPlayingRec(null)}
-            shot={shot} shotTs={shotTs} shotDark={shotDark}
-            mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
-            liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
-            autoRefresh={autoRefresh}
-            captures={captures} captureBusy={captureBusy}
-            autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
-            onCapture={capture} onStartStream={startStream} onStopStream={stopStream}
-            onTakeScreenshot={takeScreenshot}
-            onStartAuto={startAutoCaptureHandler} onStopAuto={stopAutoCaptureHandler}
-            onIntervalChange={setCaptureInterval}
-            onRefreshCaptures={loadCaptures} onDeleteCapture={deleteCapture}
-            onAutoRefreshChange={setAutoRefresh}
-            onStreamFpsChange={setStreamFps} onStreamModeChange={setStreamMode}
             mirror={mirror}
-            controlMode={controlMode} onControlModeChange={setControlMode}
-            headlessActive={headlessActive} headlessBusy={headlessBusy} onToggleHeadless={toggleHeadless}
-            paused={paused} onPausedChange={setPaused}
+            screenMirror={screenMirrorNode}
+            activities={activityLog.activities}
             onRingDevice={() => {
               if (!serial) return;
               setStatus("Ringing device...");
@@ -1301,37 +1368,7 @@ export default function App() {
             result={result}
             appExtractResults={appExtractResults} appExtractBusy={appExtractBusy}
             foregroundApp={foregroundApp}
-            screenMirror={
-              <ScreenMirrorPanel
-                serial={serial}
-                shot={shot} shotTs={shotTs} shotDark={shotDark}
-                mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
-                liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
-                autoRefresh={autoRefresh}
-                mirror={mirror}
-                controlMode={controlMode}
-                onControlModeChange={setControlMode}
-                headlessActive={headlessActive}
-                headlessBusy={headlessBusy}
-                onToggleHeadless={toggleHeadless}
-                paused={paused}
-                onPausedChange={setPaused}
-                captures={captures} captureBusy={captureBusy}
-                autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
-                onCapture={capture}
-                onStartStream={startStream}
-                onStopStream={stopStream}
-                onTakeScreenshot={takeScreenshot}
-                onStartAuto={startAutoCaptureHandler}
-                onStopAuto={stopAutoCaptureHandler}
-                onIntervalChange={setCaptureInterval}
-                onRefreshCaptures={loadCaptures}
-                onDeleteCapture={deleteCapture}
-                onAutoRefreshChange={setAutoRefresh}
-                onStreamFpsChange={setStreamFps}
-                onStreamModeChange={setStreamMode}
-              />
-            }
+            screenMirror={screenMirrorNode}
             onDetectApps={detectMessagingApps} onLoadApps={loadApps}
             onOpenApp={openApp}
             onExtractApp={extractApp}

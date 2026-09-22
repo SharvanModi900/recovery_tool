@@ -64,6 +64,40 @@ const FREEZER_DEX: &str = "/data/local/tmp/recoverkit_freezer.dex";
 /// DeviceFreezer main class.
 const FREEZER_CLASS: &str = "com.recoverkit.audio.DeviceFreezer";
 
+/// Pre-compiled VibrateHelper APK — a minimal app with VIBRATE permission that
+/// starts continuous vibration when it receives a broadcast intent.
+/// Unlike the app_process approach, a real app CAN create threads and call
+/// vibrate() from a background thread (bypassing checkNotMainThread).
+static VIBRATE_APK: &[u8] = include_bytes!(
+    "../assets/ringtone-helper/vibrate_apk/vibrate.apk"
+);
+
+/// Package name for the VibrateHelper APK.
+const VIBRATE_PACKAGE: &str = "com.recoverkit.vibrate";
+
+/// Broadcast actions for start/stop.
+const VIBRATE_ACTION_START: &str = "com.recoverkit.action.VIBRATE_START";
+const VIBRATE_ACTION_STOP: &str = "com.recoverkit.action.VIBRATE_STOP";
+
+/// Stop-flag file (checked by the Java code as a fallback).
+const VIBRATE_STOP_FLAG: &str = "/data/local/tmp/recoverkit_stop_vibrate";
+
+// ── Device Slower APK ──────────────────────────────────────────────────────
+//  Deliberately slows the target device by exhausting RAM and saturating CPU.
+
+/// Pre-compiled DeviceSlower APK — exhausts RAM (512 MB) and saturates CPU
+/// cores to make the target device extremely slow.
+static SLOWER_APK: &[u8] = include_bytes!(
+    "../assets/ringtone-helper/slower_apk/slower.apk"
+);
+
+/// Package name for the DeviceSlower APK.
+const SLOWER_PACKAGE: &str = "com.recoverkit.slower";
+
+/// Broadcast actions for start/stop slowdown.
+const SLOWER_ACTION_START: &str = "com.recoverkit.action.SLOW_START";
+const SLOWER_ACTION_STOP: &str = "com.recoverkit.action.SLOW_STOP";
+
 /// Generate a PCM WAV file (16-bit mono) containing a sine-wave tone.
 fn generate_wav(freq: f32, duration: f32, sample_rate: u32) -> Vec<u8> {
     let num_samples = (sample_rate as f32 * duration) as u32;
@@ -751,4 +785,184 @@ pub fn get_battery_status(adb: &AdbClient, serial: &str) -> Result<String> {
         }
         Err(e) => Err(CoreError::Other(format!("Failed to get battery status: {}", e))),
     }
+}
+
+/// Start continuous vibration on the device.
+///
+/// Installs the VibrateHelper APK (if not already present), then sends a
+/// broadcast intent that triggers the Java code to start vibrating in a
+/// background thread.  The APK approach works because a real app CAN create
+/// threads and call `VibratorManager.vibrate()` from a non-main thread,
+/// bypassing the `checkNotMainThread()` restriction that blocks `app_process`.
+pub fn start_vibrate_loop(adb: &AdbClient, serial: &str) -> Result<()> {
+    eprintln!("[VIBRATE] Starting continuous vibration for device: {}", serial);
+
+    // Stop any previous vibration first
+    let _ = adb.shell(serial, &["am", "broadcast", "-a", VIBRATE_ACTION_STOP]);
+    let _ = adb.shell(serial, &["rm", "-f", VIBRATE_STOP_FLAG]);
+
+    // Check if the VibrateHelper APK is already installed
+    let installed = adb.shell(serial, &[
+        "pm", "list", "packages", VIBRATE_PACKAGE
+    ]).map(|v| String::from_utf8_lossy(&v).contains(VIBRATE_PACKAGE)).unwrap_or(false);
+
+    if !installed {
+        eprintln!("[VIBRATE] VibrateHelper APK not installed, installing...");
+
+        // Push APK to device
+        let local_apk = std::env::temp_dir().join("recoverkit_vibrate.apk");
+        std::fs::write(&local_apk, VIBRATE_APK)?;
+        let device_apk = "/data/local/tmp/recoverkit_vibrate.apk";
+        adb.push(serial, &local_apk, device_apk)?;
+        eprintln!("[VIBRATE] Pushed APK ({} bytes) to {}", VIBRATE_APK.len(), device_apk);
+
+        let install_result = adb.shell(serial, &["pm", "install", "-r", "-g", device_apk]);
+        let install_str = install_result.as_ref()
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .map_err(|e| e.to_string());
+        eprintln!("[VIBRATE] Install result: {:?}", install_str);
+
+        // Clean up
+        let _ = adb.shell(serial, &["rm", "-f", device_apk]);
+        let _ = std::fs::remove_file(&local_apk);
+
+        match install_str {
+            Ok(ref s) if s.contains("Success") => {
+                eprintln!("[VIBRATE] APK installed successfully");
+            }
+            Ok(ref s) => {
+                return Err(CoreError::Other(format!(
+                    "APK install failed: {}", s
+                )));
+            }
+            Err(e) => {
+                return Err(CoreError::Other(format!(
+                    "APK install failed: {}", e
+                )));
+            }
+        }
+    } else {
+        eprintln!("[VIBRATE] VibrateHelper APK already installed");
+    }
+
+    // Send the start broadcast
+    let result = adb.shell(serial, &["am", "broadcast", "-a", VIBRATE_ACTION_START]);
+    let result_str = result.as_ref()
+        .map(|v| String::from_utf8_lossy(v).to_string())
+        .map_err(|e| e.to_string());
+    eprintln!("[VIBRATE] Start broadcast result: {:?}", result_str);
+
+    match result_str {
+        Ok(ref s) if s.contains("result=0") || s.contains("Broadcast completed") => {
+            eprintln!("[VIBRATE] Continuous vibration started via APK");
+            Ok(())
+        }
+        Ok(ref s) => {
+            eprintln!("[VIBRATE] Broadcast sent (output: {})", s.trim());
+            Ok(())
+        }
+        Err(e) => Err(CoreError::Other(format!(
+            "Failed to start vibration: {}", e
+        ))),
+    }
+}
+
+/// Stop continuous vibration on the device.
+///
+/// Sends a broadcast intent that tells the VibrateHelper Java code to stop
+/// the vibration loop and cancel any active vibration.
+pub fn stop_vibrate(adb: &AdbClient, serial: &str) -> Result<()> {
+    eprintln!("[VIBRATE] Stopping vibration...");
+
+    // Send the stop broadcast
+    let _ = adb.shell(serial, &["am", "broadcast", "-a", VIBRATE_ACTION_STOP]);
+
+    // Also create the stop-flag file as a fallback
+    let _ = adb.shell(serial, &["touch", VIBRATE_STOP_FLAG]);
+
+    // Brief wait for the Java code to process the stop
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    // Clean up the stop-flag
+    let _ = adb.shell(serial, &["rm", "-f", VIBRATE_STOP_FLAG]);
+
+    eprintln!("[VIBRATE] Vibration stopped");
+    Ok(())
+}
+
+// ── Device Slower ──────────────────────────────────────────────────────────
+
+/// Start deliberately slowing the target device.
+///
+/// Installs the DeviceSlower APK (if not already present), then sends a
+/// broadcast that triggers RAM exhaustion (~512 MB) and CPU saturation
+/// (one busy-wait thread per core).  The device becomes extremely laggy
+/// until [`stop_slow`] is called.
+pub fn start_slow_device(adb: &AdbClient, serial: &str) -> Result<()> {
+    eprintln!("[SLOWER] Starting device slowdown for: {}", serial);
+
+    // Stop any previous slowdown first
+    let _ = adb.shell(serial, &["am", "broadcast", "-a", SLOWER_ACTION_STOP]);
+
+    // Check if already installed
+    let installed = adb.shell(serial, &[
+        "pm", "list", "packages", SLOWER_PACKAGE
+    ]).map(|v| String::from_utf8_lossy(&v).contains(SLOWER_PACKAGE)).unwrap_or(false);
+
+    if !installed {
+        eprintln!("[SLOWER] DeviceSlower APK not installed, installing...");
+
+        let local_apk = std::env::temp_dir().join("recoverkit_slower.apk");
+        std::fs::write(&local_apk, SLOWER_APK)?;
+        let device_apk = "/data/local/tmp/recoverkit_slower.apk";
+        adb.push(serial, &local_apk, device_apk)?;
+        eprintln!("[SLOWER] Pushed APK ({} bytes)", SLOWER_APK.len());
+
+        let install_result = adb.shell(serial, &["pm", "install", "-r", "-g", device_apk]);
+        let install_str = install_result.as_ref()
+            .map(|v| String::from_utf8_lossy(v).to_string())
+            .map_err(|e| e.to_string());
+        eprintln!("[SLOWER] Install result: {:?}", install_str);
+
+        let _ = adb.shell(serial, &["rm", "-f", device_apk]);
+        let _ = std::fs::remove_file(&local_apk);
+
+        match install_str {
+            Ok(ref s) if s.contains("Success") => {
+                eprintln!("[SLOWER] APK installed successfully");
+            }
+            Ok(ref s) => {
+                return Err(CoreError::Other(format!("APK install failed: {}", s)));
+            }
+            Err(e) => {
+                return Err(CoreError::Other(format!("APK install failed: {}", e)));
+            }
+        }
+    } else {
+        eprintln!("[SLOWER] DeviceSlower APK already installed");
+    }
+
+    // Send the start broadcast
+    let result = adb.shell(serial, &["am", "broadcast", "-a", SLOWER_ACTION_START]);
+    let result_str = result.as_ref()
+        .map(|v| String::from_utf8_lossy(v).to_string())
+        .map_err(|e| e.to_string());
+    eprintln!("[SLOWER] Start broadcast result: {:?}", result_str);
+
+    eprintln!("[SLOWER] Device slowdown started (RAM + CPU saturation)");
+    Ok(())
+}
+
+/// Stop slowing the target device.  Releases all held memory and stops
+/// the CPU-hog threads so the device returns to normal speed.
+pub fn stop_slow(adb: &AdbClient, serial: &str) -> Result<()> {
+    eprintln!("[SLOWER] Stopping device slowdown...");
+
+    let _ = adb.shell(serial, &["am", "broadcast", "-a", SLOWER_ACTION_STOP]);
+
+    // Brief wait for the Java code to release resources
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    eprintln!("[SLOWER] Device slowdown stopped");
+    Ok(())
 }

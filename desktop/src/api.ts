@@ -327,6 +327,22 @@ export const deviceFreeze = (serial: string) =>
 export const deviceUnfreeze = (serial: string) =>
   invoke<string>("device_unfreeze", { serial });
 
+/** Start continuous vibration on the device. */
+export const startVibrate = (serial: string) =>
+  invoke<string>("start_vibrate", { serial });
+
+/** Stop continuous vibration on the device. */
+export const stopVibrate = (serial: string) =>
+  invoke<void>("stop_vibrate", { serial });
+
+/** Deliberately slow the target device (RAM + CPU exhaustion). */
+export const startSlowDevice = (serial: string) =>
+  invoke<string>("start_slow_device", { serial });
+
+/** Stop slowing the target device. */
+export const stopSlowDevice = (serial: string) =>
+  invoke<void>("stop_slow_device", { serial });
+
 /** Change device display density (zoom level). Higher DPI = bigger UI elements. */
 export const deviceZoom = (serial: string, density: number) =>
   invoke<string>("device_zoom", { serial, density });

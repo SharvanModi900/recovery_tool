@@ -339,6 +339,7 @@ export interface CallEvent {
   contact_name: string | null;
   duration: number | null;
   sim_slot: number | null;
+  source?: string;  // e.g. "whatsapp" for VoIP calls
 }
 
 /** Screen capture entry from local DB. */
@@ -920,3 +921,10 @@ export interface RemoteAgentState {
   packages: ReceivedPackage[];
   storage_dir: string;
 }
+
+/** Sidebar navigation step identity — single source of truth. */
+export type Step =
+  | "connect" | "apps" | "scan" | "media"
+  | "messages" | "calls" | "contacts"
+  | "sim_forensics" | "forensics" | "device_tools"
+  | "recover" | "export" | "case" | "timeline";

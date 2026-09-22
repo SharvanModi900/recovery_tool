@@ -1,6 +1,6 @@
+import type { Step } from "../types";
 import { ForensicsPanel } from "./ForensicsPanel";
-
-type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
+import { StepNav } from "./DataStepLayout";
 
 interface ForensicsStepProps {
   serial: string;
@@ -17,10 +17,10 @@ export function ForensicsStep({ serial, onGoTo }: ForensicsStepProps) {
             Comprehensive forensic analysis: device info, data extraction, network analysis, deep forensics, and security audit.
           </p>
           <ForensicsPanel serial={serial} onClose={() => onGoTo("connect")} />
-          <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-            <button className="mini" onClick={() => onGoTo("sim_forensics")}>← SIM Forensics</button>
-            <button className="mini" onClick={() => onGoTo("recover")}>Continue to Recovery →</button>
-          </div>
+          <StepNav buttons={[
+            { label: "← SIM Forensics", target: "sim_forensics" },
+            { label: "Continue to Recovery →", target: "recover" },
+          ]} onGoTo={onGoTo} />
         </div>
       </div>
     </section>

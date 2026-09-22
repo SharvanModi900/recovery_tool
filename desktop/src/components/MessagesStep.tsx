@@ -1,8 +1,7 @@
 import { useState } from "react";
-import type { UiRecovery, WhatsAppDeepResult, DirectAcquisition } from "../types";
+import type { UiRecovery, WhatsAppDeepResult, DirectAcquisition, Step } from "../types";
 import { fmtTime } from "../types";
-
-type Step = "connect" | "apps" | "scan" | "media" | "messages" | "calls" | "contacts" | "sim_forensics" | "forensics" | "device_tools" | "recover" | "export" | "case" | "timeline";
+import { DataStepLayout, EmptyState, ConnectPrompt } from "./DataStepLayout";
 
 interface MessagesStepProps {
   serial: string;
@@ -40,130 +39,94 @@ export function MessagesStep({ serial, waDeepResult, recovery, directData, onGoT
       )
     : messages;
 
-  const tabs: { key: Tab; label: string; icon: string; count: number }[] = [
-    { key: "chats", label: "WhatsApp Chats", icon: "💬", count: waChats.length },
-    { key: "wa_calls", label: "WhatsApp Calls", icon: "📞", count: waCalls.length },
-    { key: "recovered", label: "Recovered Messages", icon: "📝", count: messages.length },
+  const tabs = [
+    { key: "chats" as const, label: "WhatsApp Chats", icon: "💬", count: waChats.length },
+    { key: "wa_calls" as const, label: "WhatsApp Calls", icon: "📞", count: waCalls.length },
+    { key: "recovered" as const, label: "Recovered Messages", icon: "📝", count: messages.length },
   ];
 
+  const hint = `${waChats.length} chats · ${messages.length} messages${waCalls.length > 0 ? ` · ${waCalls.length} WA calls` : ""}`;
+
   return (
-    <section style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <div className="panel">
-        <div className="panel-bar">
-          💬 Messages
-          <span className="sep" />
-          <span className="hint">
-            {waChats.length} chats · {messages.length} messages{waCalls.length > 0 ? ` · ${waCalls.length} WA calls` : ""}
-          </span>
-          <input
-            type="text"
-            placeholder="Filter messages…"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            style={{
-              marginLeft: "auto", padding: "4px 10px", fontSize: 11,
-              background: "var(--bg-primary)", border: "1px solid var(--border)",
-              borderRadius: 4, color: "var(--text-primary)", width: 200,
-            }}
-          />
-        </div>
-
-        <div className="fx-tabs">
-          {tabs.map((t) => (
-            <button key={t.key} className={`fx-tab${tab === t.key ? " active" : ""}`} onClick={() => setTab(t.key)}>
-              {t.icon} {t.label}
-              {t.count > 0 && <span className="fx-tab-count">{t.count}</span>}
-            </button>
-          ))}
-        </div>
-
-        <div className="panel-body" style={{ overflow: "auto" }}>
-          {!serial ? (
-            <div className="fx-empty">
-              <span className="fx-empty-icon">📱</span>
-              <span className="fx-empty-text">Connect a device to view messages</span>
-            </div>
-          ) : tab === "chats" ? (
-            waChats.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">💬</span>
-                <span className="fx-empty-text">No WhatsApp chats found — run WhatsApp deep extraction from Overview to populate this view</span>
-                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
-              </div>
-            ) : (
-              <div className="fx-scroll">
-                <table className="fx-table">
-                  <thead><tr><th>Chat JID</th><th>Name</th><th>Messages</th><th>Last Message</th><th>Last Active</th></tr></thead>
-                  <tbody>
-                    {filteredChats.map((c, i) => (
-                      <tr key={i}>
-                        <td className="mono" style={{ fontSize: 10.5 }}>{c.jid}</td>
-                        <td style={{ fontWeight: 600 }}>{c.name || "—"}</td>
-                        <td>{c.message_count}</td>
-                        <td style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.last_message || "—"}</td>
-                        <td style={{ whiteSpace: "nowrap" }}>{fmtTime(c.last_timestamp)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          ) : tab === "wa_calls" ? (
-            waCalls.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">📞</span>
-                <span className="fx-empty-text">No WhatsApp call records — run direct acquisition from Overview to populate</span>
-                <button className="mini" onClick={() => onGoTo("connect")} style={{ marginTop: 8, border: "1px solid var(--line)", color: "var(--muted)" }}>Go to Overview</button>
-              </div>
-            ) : (
-              <div className="fx-scroll">
-                <table className="fx-table">
-                  <thead><tr><th>Contact</th><th>Type</th><th>Duration</th><th>Time</th></tr></thead>
-                  <tbody>
-                    {filteredCalls.map((c, i) => (
-                      <tr key={i}>
-                        <td style={{ fontWeight: 600 }}>{c.name || c.jid}</td>
-                        <td><span className={`fx-row-label ${c.call_type === "incoming" ? "fx-cat-call" : "fx-cat-power"}`}>{c.call_type}</span></td>
-                        <td>{c.duration > 0 ? `${c.duration}s` : "—"}</td>
-                        <td>{fmtTime(c.timestamp)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          ) : (
-            messages.length === 0 ? (
-              <div className="fx-empty">
-                <span className="fx-empty-icon">📝</span>
-                <span className="fx-empty-text">No recovered messages — run database recovery from the Recovery tab</span>
-              </div>
-            ) : (
-              <div className="fx-scroll">
-                <table className="fx-table">
-                  <thead><tr><th>Time</th><th>Chat</th><th>Direction</th><th>Message</th><th>Source</th></tr></thead>
-                  <tbody>
-                    {filteredMsgs.slice(0, 500).map((m, i) => (
-                      <tr key={i}>
-                        <td style={{ whiteSpace: "nowrap" }}>{fmtTime(m.timestamp)}</td>
-                        <td className="mono" style={{ fontSize: 10.5 }}>{m.chat_jid || m.sender || "—"}</td>
-                        <td>{m.from_me ? "→ Sent" : "← Received"}</td>
-                        <td style={{ maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.text || "—"}</td>
-                        <td><span className={`fx-row-label ${m.source === "wal" ? "fx-cat-notification" : m.source === "freelist" ? "fx-cat-call" : "fx-cat-power"}`}>{m.source}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          )}
-        </div>
-
-        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-          <button className="mini" onClick={() => onGoTo("media")}>← Media</button>
-          <button className="mini" onClick={() => onGoTo("forensics")}>Forensics →</button>
-        </div>
-      </div>
-    </section>
+    <DataStepLayout
+      title="💬 Messages"
+      hint={hint}
+      filter={filter}
+      onFilterChange={setFilter}
+      filterPlaceholder="Filter messages…"
+      tabs={tabs}
+      activeTab={tab}
+      onTabChange={(k) => setTab(k as Tab)}
+      nav={<>
+        <button className="mini" onClick={() => onGoTo("media")}>← Media</button>
+        <button className="mini" onClick={() => onGoTo("forensics")}>Forensics →</button>
+      </>}
+    >
+      {!serial ? (
+        <ConnectPrompt onGoTo={onGoTo} />
+      ) : tab === "chats" ? (
+        waChats.length === 0 ? (
+          <EmptyState icon="💬" text="No WhatsApp chats found — run WhatsApp deep extraction from Overview to populate this view" cta={{ label: "Go to Overview", target: "connect", onGoTo }} />
+        ) : (
+          <div className="fx-scroll">
+            <table className="fx-table">
+              <thead><tr><th>Chat JID</th><th>Name</th><th>Messages</th><th>Last Message</th><th>Last Active</th></tr></thead>
+              <tbody>
+                {filteredChats.map((c, i) => (
+                  <tr key={i}>
+                    <td className="mono" style={{ fontSize: 10.5 }}>{c.jid}</td>
+                    <td style={{ fontWeight: 600 }}>{c.name || "—"}</td>
+                    <td>{c.message_count}</td>
+                    <td style={{ maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.last_message || "—"}</td>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtTime(c.last_timestamp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : tab === "wa_calls" ? (
+        waCalls.length === 0 ? (
+          <EmptyState icon="📞" text="No WhatsApp call records — run direct acquisition from Overview to populate" cta={{ label: "Go to Overview", target: "connect", onGoTo }} />
+        ) : (
+          <div className="fx-scroll">
+            <table className="fx-table">
+              <thead><tr><th>Contact</th><th>Type</th><th>Duration</th><th>Time</th></tr></thead>
+              <tbody>
+                {filteredCalls.map((c, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 600 }}>{c.name || c.jid}</td>
+                    <td><span className={`fx-row-label ${c.call_type === "incoming" ? "fx-cat-call" : "fx-cat-power"}`}>{c.call_type}</span></td>
+                    <td>{c.duration > 0 ? `${c.duration}s` : "—"}</td>
+                    <td>{fmtTime(c.timestamp)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : (
+        messages.length === 0 ? (
+          <EmptyState icon="📝" text="No recovered messages — run database recovery from the Recovery tab" />
+        ) : (
+          <div className="fx-scroll">
+            <table className="fx-table">
+              <thead><tr><th>Time</th><th>Chat</th><th>Direction</th><th>Message</th><th>Source</th></tr></thead>
+              <tbody>
+                {filteredMsgs.slice(0, 500).map((m, i) => (
+                  <tr key={i}>
+                    <td style={{ whiteSpace: "nowrap" }}>{fmtTime(m.timestamp)}</td>
+                    <td className="mono" style={{ fontSize: 10.5 }}>{m.chat_jid || m.sender || "—"}</td>
+                    <td>{m.from_me ? "→ Sent" : "← Received"}</td>
+                    <td style={{ maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.text || "—"}</td>
+                    <td><span className={`fx-row-label ${m.source === "wal" ? "fx-cat-notification" : m.source === "freelist" ? "fx-cat-call" : "fx-cat-power"}`}>{m.source}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      )}
+    </DataStepLayout>
   );
 }

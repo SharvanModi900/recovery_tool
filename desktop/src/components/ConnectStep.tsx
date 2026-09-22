@@ -1,8 +1,9 @@
+import type { ReactNode } from "react";
 import type {
   Device, DeviceMirror, DirectAcquisition, WhatsAppDeepResult, RootCheckResult,
-  CallEvent, CallRecording, ScreenCapture,
+  CallEvent, CallRecording,
 } from "../types";
-import { ScreenMirrorPanel } from "./ScreenMirrorPanel";
+import type { Activity } from "../hooks/useActivityLog";
 import { ConnectOverview } from "./connect/ConnectOverview";
 import { ConnectDataTab } from "./connect/ConnectDataTab";
 import { ConnectWhatsAppTab } from "./connect/ConnectWhatsAppTab";
@@ -46,41 +47,9 @@ interface ConnectStepProps {
   onLoadRecordings: () => void;
   onPlayRecording: (rec: CallRecording) => void;
   onStopPlaying: () => void;
-  // Screen mirror
+  // Device mirror (telemetry only — ScreenMirrorPanel passed as ReactNode)
   mirror: DeviceMirror | null;
-  shot: string;
-  shotTs: number;
-  shotDark: boolean;
-  mirrorBusy: boolean;
-  mirrorErr: string;
-  isVideoFrame: boolean;
-  liveStream: boolean;
-  streamFps: number;
-  streamMode: string;
-  autoRefresh: boolean;
-  captures: ScreenCapture[];
-  captureBusy: boolean;
-  autoCaptureActive: boolean;
-  captureInterval: number;
-  onCapture: (s: string) => void;
-  onStartStream: (s: string) => void;
-  onStopStream: (s: string) => void;
-  onTakeScreenshot: () => void;
-  onStartAuto: () => void;
-  onStopAuto: () => void;
-  onIntervalChange: (n: number) => void;
-  onRefreshCaptures: () => void;
-  onDeleteCapture: (id: number) => void;
-  onAutoRefreshChange: (v: boolean) => void;
-  onStreamFpsChange: (v: number) => void;
-  onStreamModeChange: (v: string) => void;
-  controlMode: boolean;
-  onControlModeChange: (v: boolean) => void;
-  headlessActive: boolean;
-  headlessBusy: boolean;
-  onToggleHeadless: (v: boolean) => void;
-  paused: boolean;
-  onPausedChange: (v: boolean) => void;
+  screenMirror?: ReactNode;
   // Device actions (status strip)
   onRingDevice: () => void;
   onLockDevice: () => void;
@@ -88,6 +57,8 @@ interface ConnectStepProps {
   chargingStopped: boolean;
   // Navigation
   onGoTo: (step: string) => void;
+  // Activity log
+  activities: Activity[];
 }
 
 export function ConnectStep(props: ConnectStepProps) {
@@ -98,49 +69,10 @@ export function ConnectStep(props: ConnectStepProps) {
     waDeepResult, waDeepBusy, rootCheck, rootBusy, onWhatsappDeep, onCheckRoot, onWhatsappDowngrade, onImportTxt, onProvideKey,
     callMonitorActive, callEvents, currentCallNotification, callRecordings, playingRec, timeline,
     onStartMonitor, onStopMonitor, onLoadRecordings, onPlayRecording, onStopPlaying,
-    shot, shotTs, shotDark, mirrorBusy, mirrorErr, isVideoFrame, liveStream, streamFps, streamMode,
-    autoRefresh, captures, captureBusy, autoCaptureActive, captureInterval,
-    onCapture, onStartStream, onStopStream, onTakeScreenshot, onStartAuto, onStopAuto,
-    onIntervalChange, onRefreshCaptures, onDeleteCapture, onAutoRefreshChange, onStreamFpsChange, onStreamModeChange,
-    controlMode, onControlModeChange,
-    headlessActive, headlessBusy, onToggleHeadless,
-    paused, onPausedChange,
+    screenMirror,
     onRingDevice, onLockDevice, onToggleCharging, chargingStopped,
-    onGoTo,
+    onGoTo, activities,
   } = props;
-
-  // Build ScreenMirrorPanel once — shared across tabs
-  const screenMirrorNode = (
-    <ScreenMirrorPanel
-      serial={serial}
-      shot={shot} shotTs={shotTs} shotDark={shotDark}
-      mirrorBusy={mirrorBusy} mirrorErr={mirrorErr} isVideoFrame={isVideoFrame}
-      liveStream={liveStream} streamFps={streamFps} streamMode={streamMode}
-      autoRefresh={autoRefresh}
-      mirror={mirror}
-      captures={captures} captureBusy={captureBusy}
-      autoCaptureActive={autoCaptureActive} captureInterval={captureInterval}
-      onCapture={onCapture}
-      onStartStream={onStartStream}
-      onStopStream={onStopStream}
-      onTakeScreenshot={onTakeScreenshot}
-      onStartAuto={onStartAuto}
-      onStopAuto={onStopAuto}
-      onIntervalChange={onIntervalChange}
-      onRefreshCaptures={onRefreshCaptures}
-      onDeleteCapture={onDeleteCapture}
-      onAutoRefreshChange={onAutoRefreshChange}
-      onStreamFpsChange={onStreamFpsChange}
-      onStreamModeChange={onStreamModeChange}
-      controlMode={controlMode}
-      onControlModeChange={onControlModeChange}
-      headlessActive={headlessActive}
-      headlessBusy={headlessBusy}
-      onToggleHeadless={onToggleHeadless}
-      paused={paused}
-      onPausedChange={onPausedChange}
-    />
-  );
 
   return (
     <section className="workbench wb-connect">
@@ -207,8 +139,9 @@ export function ConnectStep(props: ConnectStepProps) {
           serial={serial}
           mirror={mirror}
           directData={directData}
-          screenMirror={screenMirrorNode}
+          screenMirror={screenMirror}
           onGoTo={onGoTo}
+          activities={activities}
         />
       )}
       {connectTab === "data" && (
@@ -243,7 +176,7 @@ export function ConnectStep(props: ConnectStepProps) {
       )}
 
       {/* Screen mirror — shown alongside non-overview tabs */}
-      {connectTab !== "overview" && screenMirrorNode}
+      {connectTab !== "overview" && screenMirror}
     </section>
   );
 }
